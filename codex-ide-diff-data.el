@@ -251,14 +251,12 @@ When POINT or BUFFER is nil, use the current point and buffer."
 
 (defun codex-ide--register-submitted-turn-prompt (session prompt)
   "Track PROMPT as SESSION's latest submitted prompt."
-  (let* ((existing (or (codex-ide--current-turn-diff-entry session) '()))
-         (entry (list :prompt prompt
-                      :status (if (codex-ide-session-current-turn-id session)
-                                  'running
-                                'pending)
-                      :turn-id (codex-ide-session-current-turn-id session)
-                      :file-change-items
-                      (copy-tree (plist-get existing :file-change-items)))))
+  (let ((entry (list :prompt prompt
+                     :status (if (codex-ide-session-current-turn-id session)
+                                 'running
+                               'pending)
+                     :turn-id (codex-ide-session-current-turn-id session)
+                     :file-change-items nil)))
     (codex-ide--set-current-turn-diff-entry session entry)))
 
 (defun codex-ide--mark-current-turn-diff-started (session turn-id)
@@ -267,8 +265,7 @@ When POINT or BUFFER is nil, use the current point and buffer."
          (entry (list :prompt (plist-get existing :prompt)
                       :status 'running
                       :turn-id turn-id
-                      :file-change-items
-                      (copy-tree (plist-get existing :file-change-items)))))
+                      :file-change-items nil)))
     (codex-ide--set-current-turn-diff-entry session entry)))
 
 (defun codex-ide--mark-current-turn-diff-completed (session)

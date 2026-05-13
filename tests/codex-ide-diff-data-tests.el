@@ -187,6 +187,46 @@
      (equal (codex-ide--turn-file-change-diff-texts turn)
             (list expected-1 expected-2)))))
 
+(ert-deftest codex-ide-register-submitted-turn-prompt-clears-prior-diffs ()
+  (let* ((session (make-instance 'codex-ide-session))
+         (item `((type . "fileChange")
+                 (id . "file-change-1")
+                 (changes . (((path . "foo.txt")
+                              (diff . ,(string-join
+                                        '("diff --git a/foo.txt b/foo.txt"
+                                          "--- a/foo.txt"
+                                          "+++ b/foo.txt"
+                                          "@@ -1 +1 @@"
+                                          "-old"
+                                          "+new")
+                                        "\n"))))))))
+    (setf (codex-ide-session-current-turn-id session) "turn-1")
+    (codex-ide--mark-current-turn-diff-started session "turn-1")
+    (codex-ide--put-current-turn-file-change session "file-change-1" item)
+    (should (codex-ide--current-turn-diff-texts session))
+    (setf (codex-ide-session-current-turn-id session) nil)
+    (codex-ide--register-submitted-turn-prompt session "next prompt")
+    (should-not (codex-ide--current-turn-diff-texts session))))
+
+(ert-deftest codex-ide-mark-current-turn-diff-started-clears-prior-diffs ()
+  (let* ((session (make-instance 'codex-ide-session))
+         (item `((type . "fileChange")
+                 (id . "file-change-1")
+                 (changes . (((path . "foo.txt")
+                              (diff . ,(string-join
+                                        '("diff --git a/foo.txt b/foo.txt"
+                                          "--- a/foo.txt"
+                                          "+++ b/foo.txt"
+                                          "@@ -1 +1 @@"
+                                          "-old"
+                                          "+new")
+                                        "\n"))))))))
+    (codex-ide--mark-current-turn-diff-started session "turn-1")
+    (codex-ide--put-current-turn-file-change session "file-change-1" item)
+    (should (codex-ide--current-turn-diff-texts session))
+    (codex-ide--mark-current-turn-diff-started session "turn-2")
+    (should-not (codex-ide--current-turn-diff-texts session))))
+
 (ert-deftest codex-ide-read-turn-combined-diff-text-uses-rollout-render-items ()
   (let ((path (make-temp-file "codex-ide-diff-rollout-" nil ".jsonl"))
         (patch-text (string-join
