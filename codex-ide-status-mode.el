@@ -958,25 +958,25 @@ at the start of the containing separator-delimited block."
                                         (marker-position
                                          (codex-ide-session-input-prompt-start-marker session)))
                                    (point-max))
-                             (point-max)))
-                 (block-range
-                  (codex-ide-status-mode--last-output-block-range
-                   turn-start
-                   turn-end))
-                 (start (car block-range))
-                 (end (cdr block-range)))
-            (goto-char start)
-            (while (and (< (point) end)
-                        (eq (char-after) ?\n))
-              (forward-char 1))
-            (setq start (point))
-            (goto-char end)
-            (while (and (> (point) start)
-                        (memq (char-before) '(?\n ?\s ?\t)))
-              (backward-char 1))
-            (setq end (point))
-            (when (< start end)
-              (cons start end))))))))
+                             (point-max))))
+            (when-let* ((block-range
+                         (codex-ide-status-mode--last-output-block-range
+                          turn-start
+                          turn-end)))
+              (let ((start (car block-range))
+                    (end (cdr block-range)))
+                (goto-char start)
+                (while (and (< (point) end)
+                            (eq (char-after) ?\n))
+                  (forward-char 1))
+                (setq start (point))
+                (goto-char end)
+                (while (and (> (point) start)
+                            (memq (char-before) '(?\n ?\s ?\t)))
+                  (backward-char 1))
+                (setq end (point))
+                (when (< start end)
+                  (cons start end))))))))))
 
 (defun codex-ide-status-mode--buffer-transcript-slice (session)
   "Return the last relevant transcript slice for SESSION.

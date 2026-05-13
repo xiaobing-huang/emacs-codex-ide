@@ -510,6 +510,32 @@
 						   (get-text-property (match-beginning 0) 'face)
 						   'codex-ide-status-expanded-content-face))))))))))
 
+(ert-deftest codex-ide-status-current-turn-range-is-nil-before-output ()
+  (let* ((root-dir (codex-ide-test--make-temp-project))
+         (project-dir (expand-file-name "alpha" root-dir)))
+    (make-directory project-dir t)
+    (codex-ide-test-with-fixture root-dir
+				 (codex-ide-test-with-fake-processes
+				  (let ((session nil))
+				    (let ((default-directory project-dir))
+				      (setq session (codex-ide--create-process-session)))
+				    (with-current-buffer (codex-ide-session-buffer session)
+				      (let ((inhibit-read-only t)
+					    (start nil))
+					(erase-buffer)
+					(setq start (point))
+					(insert "> Waiting for first output")
+					(codex-ide--style-user-prompt-region start (point))
+					(insert "\n\n"))
+				      (codex-ide--insert-input-prompt session ""))
+				    (setf (codex-ide-session-status session) "running")
+				    (should-not
+				     (codex-ide-status-mode--current-turn-transcript-range
+				      session))
+				    (should-not
+				     (codex-ide-status-mode--buffer-transcript-slice
+				      session)))))))
+
 (ert-deftest codex-ide-status-thread-expanded-view-shows-buffer-details-when-linked ()
   (let* ((root-dir (codex-ide-test--make-temp-project))
          (project-dir (expand-file-name "alpha" root-dir))
