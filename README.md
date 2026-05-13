@@ -13,7 +13,7 @@ This package provides native integration with `codex app-server` which, unlike t
 
 - Runs Codex as an Emacs major mode with no terminal wrapper.
 - Renders code blocks with full Emacs major-mode syntax highlighting instead of terminal-style formatting.
-- Displays diffs using Emacs diff rendering, so patches look and read like they belong in Emacs.
+- Displays diffs using Emacs diff rendering, so patches look and read like they belong in Emacs, including a canonical session diff buffer that can follow live work or transcript position.
 - Turns Codex file and code references into clickable Emacs widgets that jump straight to real buffers.
 - Keeps approvals in-buffer with an interactive review flow for confirming commands and changes without leaving the session.
 - Lets you expand or collapse transcript detail, so you can skim the headline progress or inspect the full turn-by-turn output.
@@ -105,9 +105,47 @@ Key bindings:
 
 - `C-c RET` submits the active prompt.
 - `C-c C-c` or `C-c C-k` interrupts the current response.
+- `C-c C-d` opens the session diff buffer.
 - `C-M-p` and `C-M-n` move between prompt lines.
 - `M-p` and `M-n` cycle prompt history while point is in the active prompt.
 - `TAB` and `S-TAB` move between clickable buttons and file links.
+
+### Session diff buffer
+
+Codex IDE can show a canonical diff buffer for each session. Open it with
+`C-c C-d` from a session buffer, `M-x codex-ide-session-diff-open`, or from
+`M-x codex-ide-menu` with the `D` / `Session diff` entry.
+
+The session diff buffer is derived from `diff-mode`, so normal Emacs diff
+navigation and font-locking apply. It is tied to one Codex session and reuses a
+stable buffer name ending in `-session-diff`, making it a good companion window
+while Codex is editing files.
+
+The buffer has three source states:
+
+- `live`: show the latest or currently running turn diff. Use this while Codex
+  is actively making changes and you want a live view of what is being edited.
+  Incoming file-change updates refresh the buffer automatically.
+- `transcript`: show the diff for the prompt/response at point in the session
+  transcript. Use this when reviewing earlier turns or comparing what changed
+  at different points in the conversation. Moving point in the session buffer
+  updates the diff buffer when the selected turn changes.
+- `pinned`: keep showing one selected turn. Use this when you want the diff to
+  stay fixed while you move around the transcript or while newer activity
+  arrives.
+
+Key bindings in `codex-ide-session-diff-mode`:
+
+- `g` refreshes the diff buffer.
+- `l` switches to `live`.
+- `t` switches to `transcript`.
+- `p` switches to `pinned`.
+- `RET` jumps from a diff line to the corresponding source file location when
+  Codex IDE can resolve it.
+
+The session diff buffer is separate from static turn diff buffers. Use the
+session diff when you want an automatically updating view; use a turn-specific
+diff when you want a snapshot.
 
 ## Examples
 

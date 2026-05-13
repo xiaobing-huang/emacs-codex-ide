@@ -448,6 +448,8 @@ while 1 would fully replace the background with the foreground color.")
 
 * \\[codex-ide-interrupt] interrupts the current turn.
 
+* \\[codex-ide-session-diff-open] opens the session diff buffer.
+
 * \\[codex-ide-previous-prompt-line] and \\[codex-ide-next-prompt-line] move between prompt lines.
 
 * \\[codex-ide-session-mode-nav-forward] and \\[codex-ide-session-mode-nav-backward] move between transcript focal points, including
