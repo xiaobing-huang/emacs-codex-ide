@@ -140,6 +140,9 @@ Key bindings in `codex-ide-session-diff-mode`:
 - `l` switches to `live`.
 - `t` switches to `transcript`.
 - `p` switches to `pinned`.
+- `C-c TAB` toggles the file diff at point.
+- `C-c C-a` collapses all file diffs.
+- `C-c C-e` expands all file diffs.
 - `RET` jumps from a diff line to the corresponding source file location when
   Codex IDE can resolve it.
 

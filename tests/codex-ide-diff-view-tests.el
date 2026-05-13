@@ -8,6 +8,7 @@
 
 (require 'cl-lib)
 (require 'ert)
+(require 'seq)
 (require 'subr-x)
 (require 'codex-ide)
 
@@ -67,6 +68,104 @@
                             (expand-file-name default-directory))))))
       (when (buffer-live-p diff-buffer)
         (kill-buffer diff-buffer)))))
+
+(ert-deftest codex-ide-diff-mode-binds-file-folding-commands ()
+  (with-temp-buffer
+    (codex-ide-diff-mode)
+    (should (eq (key-binding (kbd "C-c TAB"))
+                #'codex-ide-diff-toggle-file-at-point))
+    (should (eq (key-binding (kbd "C-c C-a"))
+                #'codex-ide-diff-collapse-all-files))
+    (should (eq (key-binding (kbd "C-c C-e"))
+                #'codex-ide-diff-expand-all-files))))
+
+(ert-deftest codex-ide-diff-collapse-and-expand-all-files ()
+  (with-temp-buffer
+    (insert (string-join
+             '("diff --git a/foo.txt b/foo.txt"
+               "--- a/foo.txt"
+               "+++ b/foo.txt"
+               "@@ -1 +1 @@"
+               "-old"
+               "+new"
+               "diff --git a/bar.txt b/bar.txt"
+               "--- a/bar.txt"
+               "+++ b/bar.txt"
+               "@@ -1 +1 @@"
+               "-older"
+               "+newer")
+             "\n"))
+    (codex-ide-diff-mode)
+    (should (= (codex-ide-diff-collapse-all-files) 2))
+    (let ((folds (seq-filter
+                  (lambda (overlay)
+                    (overlay-get overlay 'codex-ide-diff-file-fold))
+                  (overlays-in (point-min) (point-max)))))
+      (should (= (length folds) 2))
+      (dolist (overlay folds)
+        (should (overlay-get overlay 'invisible))
+        (should (string-match-p
+                 "hidden diff lines"
+                 (or (overlay-get overlay 'after-string) "")))))
+    (codex-ide-diff-expand-all-files)
+    (should-not
+     (seq-some
+      (lambda (overlay)
+        (overlay-get overlay 'codex-ide-diff-file-fold))
+      (overlays-in (point-min) (point-max))))))
+
+(ert-deftest codex-ide-diff-toggle-file-at-point-folds-single-file ()
+  (with-temp-buffer
+    (insert (string-join
+             '("diff --git a/foo.txt b/foo.txt"
+               "--- a/foo.txt"
+               "+++ b/foo.txt"
+               "@@ -1 +1 @@"
+               "-old"
+               "+new"
+               "diff --git a/bar.txt b/bar.txt"
+               "--- a/bar.txt"
+               "+++ b/bar.txt"
+               "@@ -1 +1 @@"
+               "-older"
+               "+newer")
+             "\n"))
+    (codex-ide-diff-mode)
+    (goto-char (point-min))
+    (codex-ide-diff-toggle-file-at-point)
+    (let ((folds (seq-filter
+                  (lambda (overlay)
+                    (overlay-get overlay 'codex-ide-diff-file-fold))
+                  (overlays-in (point-min) (point-max)))))
+      (should (= (length folds) 1))
+      (should (string-match-p
+               "foo\\.txt"
+               (buffer-substring-no-properties
+                (point-min)
+                (overlay-start (car folds))))))
+    (codex-ide-diff-toggle-file-at-point)
+    (should-not
+     (seq-some
+      (lambda (overlay)
+        (overlay-get overlay 'codex-ide-diff-file-fold))
+      (overlays-in (point-min) (point-max))))))
+
+(ert-deftest codex-ide-diff-collapse-all-files-supports-headerless-normalized-diff ()
+  (with-temp-buffer
+    (insert (string-join
+             '("--- a/foo.txt"
+               "+++ b/foo.txt"
+               "@@ -1 +1 @@"
+               "-old"
+               "+new"
+               "--- a/bar.txt"
+               "+++ b/bar.txt"
+               "@@ -1 +1 @@"
+               "-older"
+               "+newer")
+             "\n"))
+    (codex-ide-diff-mode)
+    (should (= (codex-ide-diff-collapse-all-files) 2))))
 
 (ert-deftest codex-ide-diff-source-location-tracks-hunk-new-lines ()
   (let ((diff-text

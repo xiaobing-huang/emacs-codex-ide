@@ -38,13 +38,22 @@
 (defvar codex-ide-diff-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map diff-mode-map)
+    (define-key map (kbd "C-c TAB") #'codex-ide-diff-toggle-file-at-point)
+    (define-key map (kbd "C-c C-a") #'codex-ide-diff-collapse-all-files)
+    (define-key map (kbd "C-c C-e") #'codex-ide-diff-expand-all-files)
     (define-key map (kbd "RET") #'codex-ide-diff-goto-source-at-point)
     (define-key map (kbd "<return>") #'codex-ide-diff-goto-source-at-point)
     map)
   "Keymap used in standalone Codex diff buffers.")
 
 (define-derived-mode codex-ide-diff-mode diff-mode "Codex-Diff"
-  "Major mode for standalone Codex diff buffers.")
+  "Major mode for standalone Codex diff buffers.
+
+\\<codex-ide-diff-mode-map>
+* \\[codex-ide-diff-toggle-file-at-point] toggles the file diff at point.
+* \\[codex-ide-diff-collapse-all-files] collapses all file diffs.
+* \\[codex-ide-diff-expand-all-files] expands all file diffs.
+* \\[codex-ide-diff-goto-source-at-point] jumps to source for the diff line at point.")
 
 (defvar-local codex-ide-session-diff--session nil
   "Codex session associated with the current session diff buffer.")
@@ -119,6 +128,129 @@ The value is one of `live', `transcript', or `pinned'.")
           (if (bufferp session-buffer)
               (buffer-name session-buffer)
             session-buffer)))
+
+(defun codex-ide-diff--file-section-header-regexp ()
+  "Return the regexp used to find file section headers."
+  (save-excursion
+    (goto-char (point-min))
+    (if (re-search-forward (rx line-start "diff --git ") nil t)
+        (rx line-start "diff --git ")
+      (rx line-start
+          (or "--- "
+              "*** "
+              "Index: ")))))
+
+(defun codex-ide-diff--collect-file-sections ()
+  "Return file sections in the current diff buffer.
+Each section is a plist containing `:start', `:body-start', and `:end'."
+  (let ((header-regexp (codex-ide-diff--file-section-header-regexp))
+        sections)
+    (save-excursion
+      (goto-char (point-min))
+      (while (re-search-forward header-regexp nil t)
+        (goto-char (match-beginning 0))
+        (let* ((start (point))
+               (body-start (min (point-max)
+                                (save-excursion
+                                  (forward-line 1)
+                                  (point))))
+               (end (save-excursion
+                      (forward-line 1)
+                      (if (re-search-forward header-regexp nil t)
+                          (match-beginning 0)
+                        (point-max)))))
+          (when (> end start)
+            (push (list :start start
+                        :body-start body-start
+                        :end end)
+                  sections))
+          (goto-char (max (1+ (point)) (line-end-position))))))
+    (nreverse sections)))
+
+(defun codex-ide-diff--delete-file-fold-overlays ()
+  "Delete all file-fold overlays in the current buffer."
+  (remove-overlays (point-min) (point-max) 'codex-ide-diff-file-fold t))
+
+(defun codex-ide-diff--line-count-between (start end)
+  "Return the number of whole or partial lines between START and END."
+  (max 0
+       (save-excursion
+         (goto-char start)
+         (count-lines start end))))
+
+(defun codex-ide-diff--make-file-fold-overlay (body-start end)
+  "Hide file diff body from BODY-START to END."
+  (when (> end body-start)
+    (let* ((line-count (codex-ide-diff--line-count-between body-start end))
+           (overlay (make-overlay body-start end nil t nil)))
+      (overlay-put overlay 'codex-ide-diff-file-fold t)
+      (overlay-put overlay 'evaporate t)
+      (overlay-put overlay 'invisible t)
+      (overlay-put overlay 'isearch-open-invisible #'delete-overlay)
+      (overlay-put overlay
+                   'after-string
+                   (propertize
+                    (format "  ... %d hidden diff %s\n"
+                            line-count
+                            (if (= line-count 1) "line" "lines"))
+                    'face 'shadow))
+      overlay)))
+
+(defun codex-ide-diff--file-section-at-point ()
+  "Return the file section containing point, or nil."
+  (let ((pos (point))
+        found)
+    (dolist (section (codex-ide-diff--collect-file-sections) found)
+      (when (and (<= (plist-get section :start) pos)
+                 (< pos (plist-get section :end)))
+        (setq found section)))))
+
+(defun codex-ide-diff--fold-overlay-for-section (section)
+  "Return the fold overlay for SECTION, if any."
+  (cl-find-if
+   (lambda (overlay)
+     (and (overlay-get overlay 'codex-ide-diff-file-fold)
+          (= (overlay-start overlay) (plist-get section :body-start))
+          (= (overlay-end overlay) (plist-get section :end))))
+   (overlays-in (plist-get section :body-start)
+                (plist-get section :end))))
+
+(defun codex-ide-diff-collapse-all-files ()
+  "Collapse all file sections in the current Codex diff buffer."
+  (interactive)
+  (unless (derived-mode-p 'codex-ide-diff-mode)
+    (user-error "Not in a Codex diff buffer"))
+  (codex-ide-diff--delete-file-fold-overlays)
+  (let ((count 0))
+    (dolist (section (codex-ide-diff--collect-file-sections))
+      (when (codex-ide-diff--make-file-fold-overlay
+             (plist-get section :body-start)
+             (plist-get section :end))
+        (setq count (1+ count))))
+    (unless (> count 0)
+      (message "No file diffs to collapse"))
+    count))
+
+(defun codex-ide-diff-expand-all-files ()
+  "Expand all collapsed file sections in the current Codex diff buffer."
+  (interactive)
+  (unless (derived-mode-p 'codex-ide-diff-mode)
+    (user-error "Not in a Codex diff buffer"))
+  (codex-ide-diff--delete-file-fold-overlays))
+
+(defun codex-ide-diff-toggle-file-at-point ()
+  "Toggle the file diff section at point."
+  (interactive)
+  (unless (derived-mode-p 'codex-ide-diff-mode)
+    (user-error "Not in a Codex diff buffer"))
+  (let ((section (codex-ide-diff--file-section-at-point)))
+    (unless section
+      (user-error "No file diff at point"))
+    (if-let* ((overlay (codex-ide-diff--fold-overlay-for-section section)))
+        (delete-overlay overlay)
+      (codex-ide-diff--make-file-fold-overlay
+       (plist-get section :body-start)
+       (plist-get section :end)))))
 
 (defun codex-ide-session-diff-buffer-name-for-session (session-buffer)
   "Return the canonical session diff buffer name for SESSION-BUFFER."
