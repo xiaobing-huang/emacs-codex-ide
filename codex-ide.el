@@ -257,6 +257,7 @@ thread-list limit."
 (require 'codex-ide-renderer)
 (require 'codex-ide-session-mode)
 (require 'codex-ide-protocol)
+(require 'codex-ide-thread-history)
 (require 'codex-ide-diff-data)
 (require 'codex-ide-diff-view)
 (require 'codex-ide-rollout)

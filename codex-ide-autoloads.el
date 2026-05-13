@@ -500,6 +500,11 @@ otherwise use the most recent completed turn.
 
 (register-definition-prefixes "codex-ide-rollout" '("codex-ide-rollout-"))
 
+
+
+;;; Generated autoloads from codex-ide-thread-history.el
+
+(register-definition-prefixes "codex-ide-thread-history" '("codex-ide--"))
 
 ;;; End of scraped data
 

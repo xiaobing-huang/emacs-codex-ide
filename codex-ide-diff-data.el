@@ -16,6 +16,7 @@
 (require 'seq)
 (require 'codex-ide-core)
 (require 'codex-ide-protocol)
+(require 'codex-ide-thread-history)
 (require 'subr-x)
 
 (defun codex-ide--apply-patch-file-paths (text)
@@ -388,7 +389,8 @@ When TURN-ID is nil, use the most recent stored turn."
   (let* ((thread-id (codex-ide-session-thread-id session))
          (thread-read (and thread-id
                            (ignore-errors
-                             (codex-ide--read-thread session thread-id t))))
+                             (codex-ide--thread-read-with-rollout-render-items
+                              (codex-ide--read-thread session thread-id t)))))
          (diff-text
           (codex-ide--thread-read-combined-diff-text thread-read turn-id)))
     (or diff-text

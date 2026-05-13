@@ -6,7 +6,9 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'ert)
+(require 'json)
 (require 'subr-x)
 (require 'codex-ide)
 
@@ -184,5 +186,57 @@
     (should
      (equal (codex-ide--turn-file-change-diff-texts turn)
             (list expected-1 expected-2)))))
+
+(ert-deftest codex-ide-read-turn-combined-diff-text-uses-rollout-render-items ()
+  (let ((path (make-temp-file "codex-ide-diff-rollout-" nil ".jsonl"))
+        (patch-text (string-join
+                     '("*** Begin Patch"
+                       "*** Update File: foo.txt"
+                       "@@"
+                       "-old"
+                       "+new"
+                       "*** End Patch")
+                     "\n")))
+    (unwind-protect
+        (progn
+          (with-temp-file path
+            (dolist (entry
+                     `(((type . "event_msg")
+                        (payload . ((type . "task_started"))))
+                       ((type . "response_item")
+                        (payload . ((type . "custom_tool_call")
+                                    (name . "apply_patch")
+                                    (call_id . "call-patch-1")
+                                    (input . ,patch-text))))
+                       ((type . "event_msg")
+                        (payload . ((type . "task_complete"))))))
+              (insert (json-encode entry) "\n")))
+          (let* ((session (make-instance 'codex-ide-session
+                                         :thread-id "thread-1"))
+                 (thread-read
+                  `((thread . ((id . "thread-1")
+                               (path . ,path)
+                               (turns . [((id . "turn-1")
+                                          (items . [((type . "userMessage")
+                                                     (text . "change it"))
+                                                    ((type . "agentMessage")
+                                                     (text . "done"))]))]))))))
+            (cl-letf (((symbol-function 'codex-ide--read-thread)
+                       (lambda (_session thread-id _include-history)
+                         (should (equal thread-id "thread-1"))
+                         thread-read)))
+              (should
+               (equal (codex-ide-diff-data-combined-turn-diff-text
+                       session
+                       "turn-1")
+                      (string-join
+                       '("--- a/foo.txt"
+                         "+++ b/foo.txt"
+                         "@@"
+                         "-old"
+                         "+new")
+                       "\n"))))))
+      (when (file-exists-p path)
+        (delete-file path)))))
 
 ;;; codex-ide-diff-data-tests.el ends here
