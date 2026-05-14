@@ -1863,6 +1863,18 @@
                 (ensure-list
                  (face-attribute 'codex-ide-prompt-prefix-face :inherit nil)))))
 
+(ert-deftest codex-ide-steering-prompt-face-inherits-user-prompt-face ()
+  (should (memq 'codex-ide-user-prompt-face
+                (ensure-list
+                 (face-attribute 'codex-ide-steering-prompt-face
+                                 :inherit nil)))))
+
+(ert-deftest codex-ide-steering-prefix-face-inherits-user-prompt-face ()
+  (should (memq 'codex-ide-user-prompt-face
+                (ensure-list
+                 (face-attribute 'codex-ide-steering-prompt-prefix-face
+                                 :inherit nil)))))
+
 (ert-deftest codex-ide-input-prompt-has-tail-newline-for-extended-background ()
   (with-temp-buffer
     (codex-ide-session-mode)
@@ -1888,6 +1900,45 @@
                   (codex-ide-session-input-prompt-start-marker session)))
       (should (eq (get-text-property (point) 'face)
                   'codex-ide-prompt-prefix-face)))))
+
+(ert-deftest codex-ide-freeze-steering-prompt-renders-multiline-block ()
+  (with-temp-buffer
+    (codex-ide-session-mode)
+    (let ((session (make-codex-ide-session
+                    :buffer (current-buffer)
+                    :status "running")))
+      (setq-local codex-ide--session session)
+      (codex-ide--insert-input-prompt session "First line\nsecond line")
+      (codex-ide--freeze-active-input-prompt
+       session
+       "Context: foo.el 1:2"
+       'steering)
+      (should (string-match-p
+               (rx "\n  ↳ steer:\n"
+                   "    First line\n"
+                   "    second line\n"
+                   "\n"
+                   "    Context: foo.el 1:2")
+               (buffer-string)))
+      (goto-char (point-min))
+      (search-forward "↳ steer:")
+      (beginning-of-line)
+      (should
+       (get-text-property
+        (point)
+        codex-ide-steering-prompt-start-property))
+      (should-not
+       (get-text-property
+        (point)
+        codex-ide-prompt-start-property))
+      (should (eq (get-text-property (point) 'face)
+                  'codex-ide-steering-prompt-prefix-face))
+      (search-forward "First line")
+      (should (eq (get-text-property (match-beginning 0) 'face)
+                  'codex-ide-steering-prompt-face))
+      (search-forward "Context: foo.el 1:2")
+      (should (eq (get-text-property (match-beginning 0) 'face)
+                  'codex-ide-item-detail-face)))))
 
 (ert-deftest codex-ide-input-prompt-move-end-of-line-stays-at-text-end ()
   (with-temp-buffer
@@ -3512,9 +3563,26 @@
 					(should (equal (codex-ide-test--prompt-prefix-at-line) "> "))
 					(codex-ide--append-to-buffer (current-buffer) "sleep 10 still running.")
 					(should (string-match-p
-						 (rx "Actually run tests first"
+						 (rx "  ↳ steer: Actually run tests first"
 						     "\nsleep 10 still running.")
 						 (buffer-string)))
+					(goto-char (point-min))
+					(search-forward "Actually run tests first")
+					(beginning-of-line)
+					(should (looking-at-p "  ↳ steer: Actually run tests first"))
+					(should
+					 (get-text-property
+					  (point)
+					  codex-ide-steering-prompt-start-property))
+					(should-not
+					 (get-text-property
+					  (point)
+					  codex-ide-prompt-start-property))
+					(should (eq (get-text-property (point) 'face)
+						    'codex-ide-steering-prompt-prefix-face))
+					(search-forward "Actually run tests first")
+					(should (eq (get-text-property (match-beginning 0) 'face)
+						    'codex-ide-steering-prompt-face))
 					(should-not (string-match-p "Steered this turn:" (buffer-string)))
 					(goto-char (point-min))
 					(search-forward "sleep 10 still running.")

@@ -286,8 +286,8 @@ window size change."
          codex-ide-renderer--markdown-table-resize-buffers))
   (dolist (buffer codex-ide-renderer--markdown-table-resize-buffers)
     (when-let* ((table-max-width
-                (codex-ide-renderer-markdown-table-max-width-for-buffer
-                 buffer)))
+                 (codex-ide-renderer-markdown-table-max-width-for-buffer
+                  buffer)))
       (codex-ide-renderer--schedule-markdown-table-rerender
        buffer
        table-max-width))))
@@ -346,6 +346,16 @@ window size change."
   "Face used for the visible prompt prefix."
   :group 'codex-ide)
 
+(defface codex-ide-steering-prompt-face
+  '((t :inherit (font-lock-comment-face codex-ide-user-prompt-face)))
+  "Face used to distinguish steering input from top-level user prompts."
+  :group 'codex-ide)
+
+(defface codex-ide-steering-prompt-prefix-face
+  '((t :inherit (font-lock-keyword-face codex-ide-user-prompt-face)))
+  "Face used for the visible steering input prefix."
+  :group 'codex-ide)
+
 (defface codex-ide-output-separator-face
   '((t))
   "Face used for transcript separator rules."
@@ -363,6 +373,10 @@ window size change."
 
 (defconst codex-ide-prompt-start-property 'codex-ide-prompt-start
   "Text property used to mark the first character of a user prompt.")
+
+(defconst codex-ide-steering-prompt-start-property
+  'codex-ide-steering-prompt-start
+  "Text property used to mark the first character of steering input.")
 
 (defface codex-ide-command-output-face
   '((t :inherit fixed-pitch :extend t))
@@ -623,6 +637,68 @@ theme switches or file reloads in a live Emacs session."
     'rear-nonsticky `(field read-only ,codex-ide-prompt-start-property)
     'front-sticky '(field read-only))))
 
+(defun codex-ide-renderer-insert-steering-prompt-prefix (&optional block-p)
+  "Insert the steering input prefix.
+When BLOCK-P is non-nil, insert a block label without trailing space."
+  (let ((start (point)))
+    (insert (if block-p "  ↳ steer:" "  ↳ steer: "))
+    (set-text-properties start (point) nil)
+    (set-text-properties
+     start (point)
+     `(,codex-ide-steering-prompt-start-property t
+						 face codex-ide-steering-prompt-prefix-face
+						 read-only t
+						 rear-nonsticky (read-only ,codex-ide-steering-prompt-start-property)
+						 front-sticky (read-only)))))
+
+(defun codex-ide-renderer--insert-steering-body-line (line)
+  "Insert a steering body LINE with block indentation."
+  (let ((start (point)))
+    (insert "    " line)
+    (set-text-properties
+     start (point) '(face codex-ide-steering-prompt-face))))
+
+(defun codex-ide-renderer-replace-prompt-with-steering
+    (prompt-start input-start input-end)
+  "Replace prompt text from PROMPT-START to INPUT-END with steering display.
+INPUT-START is the start of the submitted prompt body.
+Return the first steering body position."
+  (let ((text (buffer-substring-no-properties input-start input-end))
+        body-start)
+    (goto-char prompt-start)
+    (delete-region prompt-start input-end)
+    (if (string-match-p "\n" text)
+        (let ((lines (split-string text "\n")))
+          (codex-ide-renderer-insert-steering-prompt-prefix t)
+          (insert "\n")
+          (setq body-start (point))
+          (while lines
+            (codex-ide-renderer--insert-steering-body-line (pop lines))
+            (when lines
+              (insert "\n"))))
+      (codex-ide-renderer-insert-steering-prompt-prefix)
+      (setq body-start (point))
+      (let ((body-start-marker (point)))
+        (insert text)
+        (set-text-properties
+         body-start-marker
+         (point)
+         '(face codex-ide-steering-prompt-face))))
+    body-start))
+
+(defun codex-ide-renderer-insert-steering-context-summary (text)
+  "Insert indented steering context summary TEXT and return (START . END)."
+  (let ((start (point)))
+    (unless (bolp)
+      (insert "\n"))
+    (insert
+     (propertize
+      (mapconcat (lambda (line) (concat "    " line))
+                 (split-string text "\n")
+                 "\n")
+      'face 'codex-ide-item-detail-face))
+    (cons start (point))))
+
 (defun codex-ide-renderer-line-has-prompt-start-p (&optional pos)
   "Return non-nil when POS is on a line beginning with a prompt."
   (save-excursion
@@ -630,6 +706,9 @@ theme switches or file reloads in a live Emacs session."
       (goto-char pos))
     (beginning-of-line)
     (and (get-text-property (point) codex-ide-prompt-start-property)
+         (not (get-text-property
+               (point)
+               codex-ide-steering-prompt-start-property))
          (or (bobp)
              (not (get-text-property (1- (point))
                                      codex-ide-prompt-start-property))))))
@@ -642,6 +721,41 @@ theme switches or file reloads in a live Emacs session."
       (goto-char start)
       (add-text-properties (line-beginning-position) (1+ (line-beginning-position))
                            `(,codex-ide-prompt-start-property t)))))
+
+(defun codex-ide-renderer-style-steering-prompt-region (start end)
+  "Apply steering input styling from START to END."
+  (when (< start end)
+    (add-text-properties start end '(face codex-ide-steering-prompt-face))))
+
+(defun codex-ide-renderer-style-steering-prompt-display
+    (prompt-start body-start input-end)
+  "Apply final steering styling to PROMPT-START..INPUT-END.
+BODY-START is the first body character returned by
+`codex-ide-renderer-replace-prompt-with-steering'."
+  (when (< prompt-start input-end)
+    (remove-list-of-text-properties
+     prompt-start
+     input-end
+     (list codex-ide-prompt-start-property))
+    (save-excursion
+      (goto-char prompt-start)
+      (let ((prefix-end (min body-start (line-end-position))))
+        (put-text-property
+         prompt-start
+         prefix-end
+         'face
+         'codex-ide-steering-prompt-prefix-face)
+        (put-text-property
+         prompt-start
+         prefix-end
+         codex-ide-steering-prompt-start-property
+         t)))
+    (when (< body-start input-end)
+      (put-text-property
+       body-start
+       input-end
+       'face
+       'codex-ide-steering-prompt-face))))
 
 (defun codex-ide-renderer-insert-user-prompt-top-padding ()
   "Insert the face-bearing padding line before a user prompt.
@@ -1431,8 +1545,8 @@ intentionally ignored."
     (start end)
   "Render completed inline markdown spans on the current streaming line."
   (when-let* ((region (codex-ide-renderer--streaming-current-line-inline-region
-                      start
-                      end)))
+                       start
+                       end)))
     (let ((line-start (car region))
           (line-end-marker (copy-marker (cdr region) t)))
       (save-excursion
@@ -1468,8 +1582,8 @@ intentionally ignored."
              (> codex-ide-renderer-markdown-streaming-defer-delay 0)
              (< start end))
     (when-let* ((region (codex-ide-renderer--streaming-current-line-inline-region
-                        start
-                        end)))
+                         start
+                         end)))
       (let* ((line-start (car region))
              (tail (buffer-substring-no-properties line-start end))
              (candidates
@@ -1568,14 +1682,14 @@ intentionally ignored."
       bounded-start
       bounded-end)
      (if-let* ((span (or (codex-ide-renderer--streaming-trailing-table-source-span
-                         bounded-start
-                         bounded-end)
-                        (codex-ide-renderer--streaming-deferred-table-row-span
-                         bounded-start
-                         bounded-end)
-                        (codex-ide-renderer--streaming-deferred-markdown-span
-                         bounded-start
-                         bounded-end))))
+                          bounded-start
+                          bounded-end)
+                         (codex-ide-renderer--streaming-deferred-table-row-span
+                          bounded-start
+                          bounded-end)
+                         (codex-ide-renderer--streaming-deferred-markdown-span
+                          bounded-start
+                          bounded-end))))
          (progn
            (add-to-invisibility-spec
             codex-ide-renderer--streaming-deferred-invisibility)
@@ -2229,7 +2343,7 @@ Use LEFT, INTERSECTION, and RIGHT as the border junction characters."
 (defun codex-ide-renderer--markdown-table-effective-max-width (indent)
   "Return the table max width after accounting for INDENT."
   (when-let* ((table-max (or codex-ide-renderer--markdown-table-max-width-override
-                            codex-ide-renderer-markdown-table-max-width)))
+                             codex-ide-renderer-markdown-table-max-width)))
     (when (> table-max 0)
       (max 1 (- table-max (string-width indent))))))
 
@@ -2399,8 +2513,8 @@ Use LEFT, INTERSECTION, and RIGHT as the border junction characters."
     (goto-char start)
     (while (< (point) (marker-position end-marker))
       (if-let* ((table (codex-ide-renderer--markdown-table-block-at-point
-                       (marker-position end-marker)
-                       allow-trailing)))
+			(marker-position end-marker)
+			allow-trailing)))
           (pcase-let ((`(,block-start ,block-end ,lines) table))
             (if-let* ((rendered (codex-ide-renderer--markdown-table-display-string lines)))
                 (let ((original (buffer-substring-no-properties
@@ -2457,7 +2571,7 @@ TABLE-MAX-WIDTH is the effective table width to use for this pass."
             ((and original
                   (not (equal render-width table-max-width)))
              (if-let* ((rendered (codex-ide-renderer--markdown-table-display-string
-                                 (split-string original "\n" t))))
+                                  (split-string original "\n" t))))
                  (let ((read-only-table
                         (codex-ide-renderer--fully-read-only-region-p
                          pos

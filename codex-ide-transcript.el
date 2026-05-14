@@ -985,6 +985,10 @@ When DRAFT is nil, preserve the current active prompt text."
   "Apply prompt styling to the user prompt region from START to END."
   (codex-ide-renderer-style-user-prompt-region start end))
 
+(defun codex-ide--style-steering-prompt-region (start end)
+  "Apply steering input styling to the region from START to END."
+  (codex-ide-renderer-style-steering-prompt-region start end))
+
 (defun codex-ide--format-compact-number (value)
   "Format numeric VALUE in a compact human-readable form."
   (cond
@@ -1264,17 +1268,24 @@ Optionally seed it with INITIAL-TEXT."
            (codex-ide--sync-prompt-minor-mode session)))
 	(codex-ide--discard-buffer-undo-history)))))
 
-(defun codex-ide--insert-context-summary (text)
-  "Insert context summary TEXT after the prompt."
-  (if (bolp)
-      (let ((start (point)))
-        (insert (propertize text 'face 'codex-ide-item-detail-face))
-        (cons start (point)))
-    (codex-ide-renderer-insert-context-summary text)))
+(defun codex-ide--insert-context-summary (text &optional prompt-kind)
+  "Insert context summary TEXT after the prompt.
+When PROMPT-KIND is `steering', indent it under the steering block."
+  (cond
+   ((eq prompt-kind 'steering)
+    (codex-ide-renderer-insert-steering-context-summary text))
+   ((bolp)
+    (let ((start (point)))
+      (insert (propertize text 'face 'codex-ide-item-detail-face))
+      (cons start (point))))
+   (t
+    (codex-ide-renderer-insert-context-summary text))))
 
-(defun codex-ide--freeze-active-input-prompt (&optional session context-summary)
+(defun codex-ide--freeze-active-input-prompt
+    (&optional session context-summary prompt-kind)
   "Freeze SESSION's active input prompt as submitted transcript text.
-When CONTEXT-SUMMARY is non-nil, insert it beneath the prompt."
+When CONTEXT-SUMMARY is non-nil, insert it beneath the prompt.
+When PROMPT-KIND is `steering', render it as nested steering input."
   (setq session (or session (codex-ide--get-default-session-for-current-buffer)))
   (unless session
     (error "No Codex session available"))
@@ -1284,20 +1295,56 @@ When CONTEXT-SUMMARY is non-nil, insert it beneath the prompt."
     (with-current-buffer buffer
       (codex-ide--without-undo-recording
        (let ((inhibit-read-only t)
-             context-start)
+             context-start
+             steering-body-start
+             steering-prompt-start)
          (codex-ide--delete-running-input-list session)
          (when-let* ((start (codex-ide-session-input-prompt-start-marker session)))
            (let ((display-start (or (codex-ide--session-metadata-get
                                      session
                                      :input-display-start-marker)
-                                    start)))
-             (codex-ide--style-user-prompt-region start (point-max))
-             (codex-ide--freeze-region display-start (point-max)))
-           (when context-summary
-             (setq context-start (point-max))
-             (goto-char context-start)
-             (codex-ide--insert-context-summary context-summary)
-             (codex-ide--freeze-region context-start (point)))))
+                                    start))
+                 (input-start (codex-ide-session-input-start-marker session)))
+             (if (eq prompt-kind 'steering)
+                 (progn
+                   (codex-ide--style-steering-prompt-region
+                    display-start
+                    (point-max))
+                   (when (markerp input-start)
+                     (let* ((prompt-start-pos (marker-position start))
+                            (input-start-pos (marker-position input-start))
+                            (input-end-pos (codex-ide--input-end-position session))
+                            (body-start
+                             (codex-ide-renderer-replace-prompt-with-steering
+                              prompt-start-pos
+                              input-start-pos
+                              input-end-pos)))
+                       (setq steering-body-start body-start
+                             steering-prompt-start prompt-start-pos)
+                       (set-marker input-start body-start)
+                       (codex-ide-renderer-style-steering-prompt-display
+                        prompt-start-pos
+                        body-start
+                        (codex-ide--input-end-position session))))
+		   (codex-ide--style-user-prompt-region start (point-max)))
+               (codex-ide--freeze-region display-start (point-max))
+               (when (and steering-prompt-start steering-body-start)
+		 (codex-ide-renderer-style-steering-prompt-display
+                  steering-prompt-start
+                  steering-body-start
+                  (codex-ide--input-end-position session))))
+             (when context-summary
+               (goto-char (point-max))
+               (let ((range (codex-ide--insert-context-summary
+                             context-summary
+                             prompt-kind)))
+		 (setq context-start (car range))
+		 (codex-ide--freeze-region context-start (cdr range))))
+             (when (and steering-prompt-start steering-body-start)
+               (codex-ide-renderer-style-steering-prompt-display
+		steering-prompt-start
+		steering-body-start
+		(codex-ide--input-end-position session))))))
        (codex-ide--delete-input-overlay session)
        (codex-ide--session-metadata-put session :active-input-boundary-marker nil)
        (codex-ide--session-metadata-put session :input-display-start-marker nil)
@@ -4764,7 +4811,8 @@ Signal an error when THREAD-READ lacks replayable transcript items."
       (codex-ide--insert-input-prompt session prompt))
     (codex-ide--freeze-active-input-prompt
      session
-     (alist-get 'context-summary payload))
+     (alist-get 'context-summary payload)
+     'steering)
     payload))
 
 (defun codex-ide--steer-prompt (&optional prompt)
