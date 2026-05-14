@@ -21,6 +21,7 @@
 
 ;;; Code:
 
+(require 'cl-lib)
 (require 'seq)
 (require 'subr-x)
 
@@ -43,12 +44,14 @@
     (inhibit-same-window . t))
   "Display action used when Codex should surface a buffer in another window.")
 
-(defun codex-ide-display-buffer (buffer &optional action)
+(cl-defun codex-ide-display-buffer
+    (buffer &optional action &key (select codex-ide-select-window-on-open))
   "Display BUFFER via `display-buffer' and return the selected window.
-When ACTION is non-nil, pass it through as the DISPLAY-BUFFER action."
+When ACTION is non-nil, pass it through as the DISPLAY-BUFFER action.
+When SELECT is non-nil, select the displayed window."
   (codex-ide--remember-buffer-context-before-switch)
   (let ((window (display-buffer buffer action)))
-    (when (and window codex-ide-select-window-on-open)
+    (when (and window select)
       (select-window window))
     window))
 

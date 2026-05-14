@@ -49,6 +49,8 @@
 (defvar codex-ide-cli-extra-flags)
 (defvar codex-ide-new-session-split)
 (defvar codex-ide-display-buffer-pop-up-action)
+(defvar codex-ide--display-buffer-other-window-pop-up-action)
+(defvar codex-ide-select-window-on-open)
 (defvar codex-ide--cli-available nil
   "Whether the Codex CLI has been detected successfully.")
 (defvar codex-ide--current-transcript-log-marker)
@@ -80,9 +82,9 @@
   "Return NAME's value in ENVIRONMENT, or nil when unset."
   (let ((prefix (concat name "=")))
     (when-let* ((entry (cl-find-if
-                       (lambda (value)
-                         (string-prefix-p prefix value))
-                       environment)))
+			(lambda (value)
+                          (string-prefix-p prefix value))
+			environment)))
       (substring entry (length prefix)))))
 
 (defun codex-ide--set-environment-variable (environment name value)
@@ -315,14 +317,18 @@ protocol requests such as thread listing."
   "Create a new query-only session for the current working directory."
   (codex-ide--create-process-session-internal :query-only t))
 
-(cl-defun codex-ide--show-session-buffer (session &key newly-created)
+(cl-defun codex-ide--show-session-buffer
+    (session &key newly-created (select codex-ide-select-window-on-open))
   "Display SESSION's buffer and return SESSION."
   (unless (buffer-live-p (codex-ide-session-buffer session))
     (user-error "Session has no transcript buffer"))
   (if newly-created
       (codex-ide--display-new-session-buffer (codex-ide-session-buffer session))
-    (codex-ide-display-buffer (codex-ide-session-buffer session)
-                              codex-ide-display-buffer-pop-up-action))
+    (let ((codex-ide-select-window-on-open select))
+      (codex-ide-display-buffer (codex-ide-session-buffer session)
+                                (if select
+                                    codex-ide-display-buffer-pop-up-action
+                                  codex-ide--display-buffer-other-window-pop-up-action))))
   (codex-ide--ensure-input-prompt session)
   session)
 
@@ -476,7 +482,7 @@ protocol requests such as thread listing."
          (thread-id nil)
          (omit-thread-id (and (eq mode 'resume)
                               (when-let* ((current-session
-                                          (codex-ide--session-for-current-buffer)))
+                                           (codex-ide--session-for-current-buffer)))
                                 (codex-ide-session-thread-id current-session)))))
     (condition-case err
         (progn
@@ -496,7 +502,7 @@ protocol requests such as thread listing."
                      (codex-ide--pick-thread query-session omit-thread-id))))
             (setq thread-id (alist-get 'id thread))
             (when-let* ((existing-session
-                        (codex-ide--session-for-thread-id thread-id working-dir)))
+                         (codex-ide--session-for-thread-id thread-id working-dir)))
               (setq reused-session existing-session)))
           (if reused-session
               (progn

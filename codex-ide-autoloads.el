@@ -419,19 +419,19 @@ while 1 would fully replace the background with the foreground color.")
 ;;; Generated autoloads from codex-ide-session.el
 
 (autoload 'codex-ide "codex-ide-session"
-  "Start Codex for the current project or directory." t)
+"Start Codex for the current project or directory." t)
 (autoload 'codex-ide-continue "codex-ide-session"
-  "Resume the most recent Codex session for the current directory." t)
+"Resume the most recent Codex session for the current directory." t)
 (autoload 'codex-ide-show-cli-info "codex-ide-session"
-  "Report Codex CLI availability and version." t)
+"Report Codex CLI availability and version." t)
 (autoload 'codex-ide-stop "codex-ide-session"
-  "Stop the Codex session associated with the current session buffer." t)
+"Stop the Codex session associated with the current session buffer." t)
 (autoload 'codex-ide-reset-current-session "codex-ide-session"
-  "Stop the current Codex session and start a new one in the same buffer." t)
+"Stop the current Codex session and start a new one in the same buffer." t)
 (autoload 'codex-ide-switch-to-buffer "codex-ide-session"
-  "Show the Codex buffer for the current project." t)
+"Show the Codex buffer for the current project." t)
 (autoload 'codex-ide-interrupt "codex-ide-session"
-  "Interrupt the active Codex turn for the current project." t)
+"Interrupt the active Codex turn for the current project." t)
 (register-definition-prefixes "codex-ide-session" '("codex-ide--"))
 
 

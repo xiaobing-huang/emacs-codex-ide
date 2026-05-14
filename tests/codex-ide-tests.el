@@ -302,6 +302,25 @@
 					  (should (eq (window-buffer (selected-window))
 						      session-buffer))))))))))
 
+(ert-deftest codex-ide-show-session-buffer-without-selection-preserves-active-buffer ()
+  (let ((project-dir (codex-ide-test--make-temp-project)))
+    (codex-ide-test-with-fixture project-dir
+				 (save-window-excursion
+				   (delete-other-windows)
+				   (let ((origin-window (selected-window))
+					 (origin-buffer (current-buffer)))
+				     (codex-ide-test-with-fake-processes
+				      (let* ((session (codex-ide--create-process-session))
+					     (session-buffer (codex-ide-session-buffer session)))
+					(set-window-buffer origin-window origin-buffer)
+					(should (eq (codex-ide--show-session-buffer
+						     session :select nil)
+						    session))
+					(should (eq (selected-window) origin-window))
+					(should (eq (window-buffer origin-window)
+						    origin-buffer))
+					(should (get-buffer-window session-buffer)))))))))
+
 (ert-deftest codex-ide-display-buffer-calls-display-buffer ()
   (let ((project-dir (codex-ide-test--make-temp-project))
         (remembered nil)
@@ -340,6 +359,25 @@
 						    target-window)))
 					 (should (eq (codex-ide-display-buffer target-buffer) target-window))
 					 (should (eq (selected-window) target-window))
+					 (should (eq (window-buffer target-window) target-buffer)))))))))
+
+(ert-deftest codex-ide-display-buffer-can-display-without-selecting-window ()
+  (let ((project-dir (codex-ide-test--make-temp-project)))
+    (codex-ide-test-with-fixture project-dir
+				 (save-window-excursion
+				   (delete-other-windows)
+				   (let ((target-buffer (get-buffer-create " *codex-display-no-focus*")))
+				     (let ((origin-window (selected-window))
+					   (target-window (split-window-right)))
+				       (set-window-buffer target-window target-buffer)
+				       (select-window origin-window)
+				       (cl-letf (((symbol-function 'display-buffer)
+						  (lambda (_buffer _action)
+						    target-window)))
+					 (should (eq (codex-ide-display-buffer
+						      target-buffer nil :select nil)
+						     target-window))
+					 (should (eq (selected-window) origin-window))
 					 (should (eq (window-buffer target-window) target-buffer)))))))))
 
 (ert-deftest codex-ide-display-buffer-respects-display-buffer-alist ()
@@ -4332,6 +4370,7 @@
   (ert-deftest codex-ide-command-approval-renders-inline-buttons-and-resolves-on-click ()
     (let ((project-dir (codex-ide-test--make-temp-project))
           (displayed-buffer nil)
+          (display-select-value t)
           (message-text nil)
           (codex-ide-model "gpt-5.4"))
       (codex-ide-test-with-fixture project-dir
@@ -4351,6 +4390,8 @@
 						((symbol-function 'codex-ide-display-buffer)
 						 (lambda (buffer &optional _action)
 						   (setq displayed-buffer buffer)
+						   (setq display-select-value
+							 codex-ide-select-window-on-open)
 						   (selected-window)))
 						((symbol-function 'message)
 						 (lambda (format-string &rest args)
@@ -4365,6 +4406,7 @@
 					   (reason . "inspect worktree")
 					   (proposedExecpolicyAmendment . ["git" "status"]))))
 				      (should (eq displayed-buffer (codex-ide-session-buffer session)))
+				      (should-not display-select-value)
 				      (should (equal message-text
 						     (format "Codex approval required in %s"
 							     (buffer-name (codex-ide-session-buffer session)))))

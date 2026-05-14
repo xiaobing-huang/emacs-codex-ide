@@ -54,7 +54,8 @@
 
 (declare-function codex-ide--ensure-session-for-current-project "codex-ide-session" ())
 (declare-function codex-ide--session-for-current-project "codex-ide-session" ())
-(declare-function codex-ide--show-session-buffer "codex-ide-session" (session &key newly-created))
+(declare-function codex-ide--show-session-buffer "codex-ide-session"
+                  (session &key newly-created select))
 (declare-function codex-ide--sync-prompt-minor-mode "codex-ide-session-mode" (&optional session))
 (declare-function codex-ide-config-effective-value "codex-ide-config" (key &optional session))
 (declare-function codex-ide-log-message "codex-ide-log" (session format-string &rest args))
@@ -3872,7 +3873,7 @@ Signal an error when THREAD-READ lacks replayable transcript items."
   (let ((buffer (codex-ide-session-buffer session)))
     (message message-text (buffer-name buffer))
     (when (codex-ide--interactive-request-display-p buffer)
-      (codex-ide--show-session-buffer session))))
+      (codex-ide--show-session-buffer session :select nil))))
 
 (cl-defun codex-ide--render-interactive-request
     (session id kind params &key title notify-message render-body metadata)
