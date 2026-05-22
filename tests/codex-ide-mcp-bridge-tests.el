@@ -515,17 +515,59 @@
             (text-mode)
             (insert "needle three\n"))
           (let* ((result (codex-ide-mcp-bridge--tool-call--search_buffers
-                          '((pattern . "needle")
-                            (major-mode . "emacs-lisp-mode")
-                            (max-results . 1))))
+                          `((pattern . "needle")
+                            (buffers . (,(buffer-name buffer-a)
+                                        ,(buffer-name buffer-b)))
+                            (max-results . 2))))
                  (matches (alist-get 'results result))
-                 (match (aref matches 0)))
-            (should (= (length matches) 1))
+                 (first-match (aref matches 0))
+                 (second-match (aref matches 1)))
+            (should (= (length matches) 2))
             (should (alist-get 'truncated result))
-            (should (equal (alist-get 'buffer match) (buffer-name buffer-a)))
-            (should (equal (alist-get 'line match) 1))))
+            (should (equal (alist-get 'buffer first-match) (buffer-name buffer-a)))
+            (should (equal (alist-get 'line first-match) 1))
+            (should (equal (alist-get 'buffer second-match) (buffer-name buffer-a)))
+            (should (equal (alist-get 'line second-match) 2))))
       (kill-buffer buffer-a)
       (kill-buffer buffer-b))))
+
+(ert-deftest codex-ide-mcp-bridge-search-buffers-requires-buffer-list ()
+  (should-error
+   (codex-ide-mcp-bridge--tool-call--search_buffers
+    '((pattern . "needle")))
+   :type 'error)
+  (should-error
+   (codex-ide-mcp-bridge--tool-call--search_buffers
+    '((pattern . "needle")
+      (buffers . ())))
+   :type 'error))
+
+(ert-deftest codex-ide-mcp-bridge-search-buffers-rejects-unknown-buffer ()
+  (should-error
+   (codex-ide-mcp-bridge--tool-call--search_buffers
+    '((pattern . "needle")
+      (buffers . (" *codex-ide-missing-search-buffer*"))))
+   :type 'error))
+
+(ert-deftest codex-ide-mcp-bridge-search-buffers-clips-long-lines ()
+  (let ((buffer (generate-new-buffer " *codex-ide-search-long-line*"))
+        (codex-ide-mcp-bridge-search-result-text-limit 20))
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (insert (make-string 30 ?a)
+                    "needle"
+                    (make-string 30 ?z)))
+          (let* ((result (codex-ide-mcp-bridge--tool-call--search_buffers
+                          `((pattern . "needle")
+                            (buffers . (,(buffer-name buffer))))))
+                 (match (aref (alist-get 'results result) 0))
+                 (text (alist-get 'text match)))
+            (should (alist-get 'text-truncated match))
+            (should (= (length text) 20))
+            (should (string-match-p "needle" text))
+            (should (> (alist-get 'text-start-column match) 1))))
+      (kill-buffer buffer))))
 
 (ert-deftest codex-ide-mcp-bridge-get-symbol-at-point-returns-bounds ()
   (let ((buffer (generate-new-buffer " *codex-ide-symbol*")))

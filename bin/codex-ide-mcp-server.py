@@ -108,12 +108,15 @@ COMMANDS = [
             "type": "object",
             "properties": {
                 "pattern": {"type": "string"},
+                "buffers": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                },
                 "regexp": {"type": "boolean"},
-                "file-backed-only": {"type": "boolean"},
-                "major-mode": {"type": "string"},
                 "max-results": {"type": "integer", "minimum": 1},
             },
-            "required": ["pattern"],
+            "required": ["pattern", "buffers"],
             "additionalProperties": False,
         },
     ),

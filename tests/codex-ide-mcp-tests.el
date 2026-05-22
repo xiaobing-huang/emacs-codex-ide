@@ -282,7 +282,20 @@
                           "emacs_ensure_file_buffer_open"
                           "emacs_show_file_buffer"
                           "emacs_kill_file_buffer"
-                          "emacs_lisp_check_parens"))))
+                          "emacs_lisp_check_parens")))
+                (let (search-tool)
+                  (dolist (tool tools)
+                    (when (equal (alist-get "name" tool nil nil #'equal)
+                                 "emacs_search_buffers")
+                      (setq search-tool tool)))
+                  (let* ((schema (alist-get "inputSchema" search-tool nil nil #'equal))
+                         (properties (alist-get "properties" schema nil nil #'equal))
+                         (buffers-schema (alist-get "buffers" properties nil nil #'equal)))
+                    (should (equal (alist-get "required" schema nil nil #'equal)
+                                   '("pattern" "buffers")))
+                    (should (equal (alist-get "type" buffers-schema nil nil #'equal)
+                                   "array"))
+                    (should (= (alist-get "minItems" buffers-schema nil nil #'equal) 1)))))
               (let* ((open-file-result
                       (alist-get "result" (nth 2 responses) nil nil #'equal))
                      (open-files-result

@@ -59,6 +59,11 @@ behavior."
   :type 'string
   :group 'codex-ide)
 
+(defcustom codex-ide-mcp-bridge-search-result-text-limit 500
+  "Maximum number of characters returned for each search result line."
+  :type 'integer
+  :group 'codex-ide)
+
 ;;;###autoload
 (defcustom codex-ide-emacs-bridge-script-path nil
   "Path to the standalone Emacs MCP bridge script.
@@ -323,6 +328,28 @@ Errors from `server-running-p' are treated as nil."
   (buffer-substring-no-properties
    (line-beginning-position)
    (line-end-position)))
+
+(defun codex-ide-mcp-bridge--bounded-line-text-at-point (position limit)
+  "Return bounded line text around POSITION with at most LIMIT characters.
+
+The result is an alist containing `text', `text-truncated', and
+`text-start-column'."
+  (let* ((line-start (line-beginning-position))
+         (line-end (line-end-position))
+         (line-length (- line-end line-start))
+         (limit (if (and (integerp limit) (> limit 0)) limit line-length))
+         (truncated (> line-length limit))
+         (offset (max 0 (- position line-start)))
+         (start-offset (if truncated
+                           (max 0
+                                (min (- line-length limit)
+                                     (- offset (/ limit 2))))
+                         0))
+         (text-start (+ line-start start-offset))
+         (text-end (min line-end (+ text-start limit))))
+    `((text . ,(buffer-substring-no-properties text-start text-end))
+      (text-truncated . ,(codex-ide-mcp-bridge--json-bool truncated))
+      (text-start-column . ,(1+ start-offset)))))
 
 (defun codex-ide-mcp-bridge--point-location ()
   "Return an alist describing point in the current buffer."
@@ -714,40 +741,55 @@ Errors from `server-running-p' are treated as nil."
        `((buffer . ,(buffer-name buffer)))
        (codex-ide-mcp-bridge--region-info)))))
 
+(defun codex-ide-mcp-bridge--buffers-from-search-params (params)
+  "Return the list of buffers named by search PARAMS."
+  (let ((buffer-names (alist-get 'buffers params)))
+    (unless (and (listp buffer-names) buffer-names)
+      (error "Missing search buffers"))
+    (mapcar
+     (lambda (buffer-name)
+       (unless (and (stringp buffer-name) (not (string-empty-p buffer-name)))
+         (error "Invalid search buffer name: %S" buffer-name))
+       (or (get-buffer buffer-name)
+           (error "Unknown buffer: %s" buffer-name)))
+     buffer-names)))
+
 (defun codex-ide-mcp-bridge--tool-call--search_buffers (params)
   "Handle a `search_buffers' bridge request with PARAMS."
   (let* ((pattern (alist-get 'pattern params))
+         (buffers (codex-ide-mcp-bridge--buffers-from-search-params params))
          (regexp (eq (alist-get 'regexp params) t))
-         (file-backed-only (eq (alist-get 'file-backed-only params) t))
-         (major-mode-filter (alist-get 'major-mode params))
          (max-results (or (alist-get 'max-results params) 100))
          (needle (and (stringp pattern)
                       (if regexp pattern (regexp-quote pattern))))
          (results nil))
     (unless (and (stringp pattern) (not (string-empty-p pattern)))
       (error "Missing search pattern"))
-    (dolist (buffer (buffer-list))
-      (when (and (< (length results) max-results)
-                 (or (not file-backed-only) (buffer-file-name buffer)))
+    (dolist (buffer buffers)
+      (when (< (length results) max-results)
         (with-current-buffer buffer
-          (when (and (or (not (stringp major-mode-filter))
-                         (equal major-mode-filter (symbol-name major-mode)))
-                     needle)
+          (when needle
             (save-excursion
               (goto-char (point-min))
               (while (and (< (length results) max-results)
                           (re-search-forward needle nil t))
-                (push `((buffer . ,(buffer-name buffer))
-                        (file . ,(codex-ide-mcp-bridge--json-nullable
-                                  (when-let* ((file (buffer-file-name buffer)))
-                                    (expand-file-name file))))
-                        (line . ,(line-number-at-pos (match-beginning 0)))
-                        (column . ,(save-excursion
-                                     (goto-char (match-beginning 0))
-                                     (1+ (current-column))))
-                        (match . ,(match-string-no-properties 0))
-                        (text . ,(codex-ide-mcp-bridge--line-text-at-point)))
-                      results)))))))
+                (let* ((match-start (match-beginning 0))
+                       (line-info
+                        (codex-ide-mcp-bridge--bounded-line-text-at-point
+                         match-start
+                         codex-ide-mcp-bridge-search-result-text-limit)))
+                  (push (append
+                         `((buffer . ,(buffer-name buffer))
+                           (file . ,(codex-ide-mcp-bridge--json-nullable
+                                     (when-let* ((file (buffer-file-name buffer)))
+                                       (expand-file-name file))))
+                           (line . ,(line-number-at-pos match-start))
+                           (column . ,(save-excursion
+                                        (goto-char match-start)
+                                        (1+ (current-column))))
+                           (match . ,(match-string-no-properties 0)))
+                         line-info)
+                        results))))))))
     `((pattern . ,pattern)
       (regexp . ,(codex-ide-mcp-bridge--json-bool regexp))
       (truncated . ,(codex-ide-mcp-bridge--json-bool
