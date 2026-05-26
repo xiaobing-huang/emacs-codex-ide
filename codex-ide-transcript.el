@@ -3037,6 +3037,8 @@ CONTEXT is either nil for ordinary transcript rendering or `approval'."
        (format "Called tool %s" (or (alist-get 'tool item) "tool")))
       ("collabToolCall"
        (format "Delegated with %s" (or (alist-get 'tool item) "collab tool")))
+      ("collabAgentToolCall"
+       (codex-ide--collab-agent-summary item))
       ("fileChange"
        (let ((count (length (or (alist-get 'changes item) '()))))
          (format "Prepared %d file change%s" count (if (= count 1) "" "s"))))
@@ -3056,6 +3058,247 @@ CONTEXT is either nil for ordinary transcript rendering or `approval'."
     (or (not session-directory)
         (not (equal (codex-ide--normalize-directory cwd)
                     (codex-ide--normalize-directory session-directory))))))
+
+(defun codex-ide--short-agent-thread-id (thread-id)
+  "Return a compact display label for agent THREAD-ID."
+  (cond
+   ((not (stringp thread-id)) nil)
+   ((string-empty-p (string-trim thread-id)) nil)
+   (t
+    (or (car (last (split-string (string-trim thread-id) "-" t)))
+        (string-trim thread-id)))))
+
+(defun codex-ide--collab-agent-action (item)
+  "Return a human-readable action label for collab agent ITEM."
+  (pcase (alist-get 'tool item)
+    ("spawnAgent" "Spawned sub-agent")
+    ("wait" "Waited for sub-agents")
+    ("closeAgent" "Closed sub-agent")
+    (tool (format "Ran sub-agent tool %s" (or tool "unknown")))))
+
+(defun codex-ide--collab-agent-status-text (status)
+  "Return a compact display string for collab agent STATUS."
+  (pcase status
+    ("inProgress" "in progress")
+    ((or "completed" "failed" "cancelled") status)
+    (_ (or status "unknown"))))
+
+(defun codex-ide--collab-agent-summary (item)
+  "Return a one-line summary for collab agent ITEM."
+  (format "%s (%s)"
+          (codex-ide--collab-agent-action item)
+          (codex-ide--collab-agent-status-text (alist-get 'status item))))
+
+(defun codex-ide--collab-agent-states (item)
+  "Return sorted agent state entries for collab agent ITEM."
+  (let (entries)
+    (dolist (entry (alist-get 'agentsStates item))
+      (push entry entries))
+    (sort entries
+          (lambda (left right)
+            (string< (format "%s" (car left))
+                     (format "%s" (car right)))))))
+
+(defun codex-ide--collab-agent-state-status (state)
+  "Return the status string from collab agent STATE."
+  (codex-ide--collab-agent-status-text
+   (and (listp state) (alist-get 'status state))))
+
+(defun codex-ide--collab-agent-receiver-summary (item)
+  "Return a compact receiver-thread summary for collab agent ITEM."
+  (let ((receivers (delq nil
+                         (mapcar #'codex-ide--short-agent-thread-id
+                                 (or (alist-get 'receiverThreadIds item)
+                                     '())))))
+    (cond
+     ((null receivers) "none")
+     ((= (length receivers) 1) (car receivers))
+     (t (format "%d agents: %s"
+                (length receivers)
+                (string-join receivers ", "))))))
+
+(defun codex-ide--collab-agent-prompt-summary (prompt)
+  "Return a compact prompt summary for collab agent PROMPT."
+  (when (and (stringp prompt)
+             (not (string-empty-p (string-trim prompt))))
+    (let ((single-line
+           (replace-regexp-in-string "[\n\t ]+" " " (string-trim prompt))))
+      (if (> (length single-line) 120)
+          (concat (substring single-line 0 117) "...")
+        single-line))))
+
+(defun codex-ide--collab-agent-final-message-entries (item)
+  "Return sorted final-message entries for collab agent ITEM."
+  (delq nil
+        (mapcar
+         (lambda (entry)
+           (let ((message (and (listp (cdr entry))
+                               (alist-get 'message (cdr entry)))))
+             (when (and (stringp message)
+                        (not (string-empty-p (string-trim message))))
+               (cons (car entry) message))))
+         (codex-ide--collab-agent-states item))))
+
+(defun codex-ide--collab-agent-final-messages-text (item)
+  "Return formatted final sub-agent messages for collab agent ITEM."
+  (when-let* ((entries (codex-ide--collab-agent-final-message-entries item)))
+    (mapconcat
+     (lambda (entry)
+       (format "Sub-agent %s\n%s"
+               (or (codex-ide--short-agent-thread-id (car entry))
+                   (format "%s" (car entry)))
+               (string-trim-right (cdr entry))))
+     entries
+     "\n\n")))
+
+(defun codex-ide--collab-agent-buffer-name (session thread-id)
+  "Return the buffer name for sub-agent THREAD-ID in SESSION."
+  (let* ((directory (and session (codex-ide-session-directory session)))
+         (project (and directory
+                       (file-name-nondirectory
+                        (directory-file-name directory)))))
+    (format "*codex-sub-agent[%s:%s]*"
+            (or project "session")
+            (or (codex-ide--short-agent-thread-id thread-id)
+                "agent"))))
+
+(defun codex-ide--open-collab-agent-message-buffer
+    (session parent-item-id thread-id message)
+  "Open a full final-message buffer for sub-agent THREAD-ID."
+  (unless (and (stringp message)
+               (not (string-empty-p (string-trim message))))
+    (user-error "No sub-agent message available"))
+  (let ((buffer (get-buffer-create
+                 (codex-ide--collab-agent-buffer-name session thread-id))))
+    (with-current-buffer buffer
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert (format "Sub-agent %s\n"
+                        (or (codex-ide--short-agent-thread-id thread-id)
+                            (format "%s" thread-id))))
+        (when parent-item-id
+          (insert (format "Parent item: %s\n" parent-item-id)))
+        (insert "\n" (string-trim-right message) "\n")
+        (goto-char (point-min))
+        (special-mode)
+        (setq-local buffer-undo-list t)
+        (when (bound-and-true-p visual-line-mode)
+          (visual-line-mode -1))
+        (when (bound-and-true-p font-lock-mode)
+          (font-lock-mode -1))))
+    (pop-to-buffer buffer)))
+
+(defun codex-ide--append-agent-detail-action-line
+    (buffer text button-label callback help-echo)
+  "Append agent detail TEXT to BUFFER with an action button."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (let* ((session (codex-ide--session-for-buffer buffer))
+             (restore-point (codex-ide--input-point-marker session))
+             (moving (and (= (point) (point-max)) (not restore-point)))
+             (active-boundary (codex-ide--active-input-boundary-marker buffer))
+             (insertion-position (codex-ide--transcript-insertion-position buffer))
+             (advance-active-boundary
+              (and active-boundary
+                   (= insertion-position (marker-position active-boundary))))
+             range)
+        (codex-ide--maybe-save-transcript-position
+         insertion-position
+         (codex-ide-renderer-append-to-buffer
+          ""
+          :insertion-point insertion-position
+          :restore-point restore-point
+          :preserve-point t
+          :move-point-to-end moving
+          :after-insert
+          (lambda (_start _end inserted-at)
+            (let ((start inserted-at)
+                  (props (codex-ide--current-agent-text-properties)))
+              (goto-char inserted-at)
+              (insert (propertize
+                       (string-trim-right (codex-ide--item-detail-line text))
+                       'face 'codex-ide-item-detail-face
+                       'font-lock-face 'codex-ide-item-detail-face
+                       'rear-nonsticky t
+                       'front-sticky t))
+              (add-text-properties start (point) props)
+              (insert (propertize " " 'face 'codex-ide-item-detail-face))
+              (codex-ide-renderer-insert-action-button
+               button-label
+               callback
+               help-echo
+               (codex-ide-nav-button-keymap)
+               props)
+              (insert (propertize "\n" 'face 'codex-ide-item-detail-face))
+              (setq range (cons start (point)))
+              (codex-ide--freeze-region start (point))
+              (codex-ide--advance-append-boundary-after
+               buffer
+               inserted-at
+               (point))
+              (when advance-active-boundary
+                (set-marker active-boundary (point))
+                (when session
+                  (codex-ide--ensure-active-input-prompt-spacing session)))))))
+        range))))
+
+(defun codex-ide--render-collab-agent-details
+    (buffer item &optional completion session item-id)
+  "Render collab agent ITEM details into BUFFER.
+When COMPLETION is non-nil, render completion-specific state details."
+  (let (rendered-lines)
+    (cl-labels
+        ((append-detail
+          (text face)
+          (let ((range
+                 (codex-ide--append-agent-text
+                  buffer
+                  (codex-ide--item-detail-line text)
+                  (or face 'codex-ide-item-detail-face))))
+            (push range rendered-lines))))
+      (append-detail
+       (format "status: %s"
+               (codex-ide--collab-agent-status-text (alist-get 'status item)))
+       (if (equal (alist-get 'status item) "failed") 'error nil))
+      (append-detail
+       (format "receivers: %s"
+               (codex-ide--collab-agent-receiver-summary item))
+       nil)
+      (when-let* ((prompt (and (not completion)
+                               (codex-ide--collab-agent-prompt-summary
+                                (alist-get 'prompt item)))))
+        (append-detail (format "prompt: %s" prompt) nil))
+      (when completion
+        (dolist (entry (codex-ide--collab-agent-states item))
+          (let* ((thread-id (car entry))
+                 (state (cdr entry))
+                 (message (and (listp state) (alist-get 'message state)))
+                 (agent-label (or (codex-ide--short-agent-thread-id thread-id)
+                                  (format "%s" thread-id)))
+                 (text (format "agent %s: %s%s"
+                               agent-label
+                               (codex-ide--collab-agent-state-status state)
+                               (if message
+                                   " (message available)"
+                                 ""))))
+            (if (and (stringp message)
+                     (not (string-empty-p (string-trim message)))
+                     session)
+                (push
+                 (codex-ide--append-agent-detail-action-line
+                  buffer
+                  text
+                  "open"
+                  (lambda ()
+                    (codex-ide--open-collab-agent-message-buffer
+                     session
+                     item-id
+                     thread-id
+                     message))
+                  "Open this sub-agent message in a separate buffer")
+                 rendered-lines)
+              (append-detail text nil))))))
+    (nreverse rendered-lines)))
 
 (defun codex-ide--render-item-start-details (session item)
   "Render detail lines for ITEM in SESSION."
@@ -3091,6 +3334,9 @@ CONTEXT is either nil for ordinary transcript rendering or `approval'."
           (codex-ide--item-detail-line
            (format "args: %s" (json-encode arguments)))
           'codex-ide-item-detail-face)))
+      ("collabAgentToolCall"
+       (codex-ide--render-collab-agent-details buffer item nil session
+                                               (alist-get 'id item)))
       ("fileChange"
        (dolist (change (or (alist-get 'changes item) '()))
          (codex-ide--append-agent-text
@@ -3148,7 +3394,7 @@ CONTEXT is either nil for ordinary transcript rendering or `approval'."
             (setq state (plist-put state :details-rendered t))
             (when (member item-type
                           '("commandExecution" "mcpToolCall" "fileChange"
-                            "webSearch"))
+                            "webSearch" "collabAgentToolCall"))
               ;; Keep delayed per-item output anchored directly after the item
               ;; block; later transcript inserts should not move this placeholder
               ;; forward.
@@ -3165,6 +3411,7 @@ CONTEXT is either nil for ordinary transcript rendering or `approval'."
                              (pcase item-type
                                ("mcpToolCall" "result")
                                ("fileChange" "diff")
+                               ("collabAgentToolCall" "messages")
                                (_ "output"))))
             (when (equal item-type "commandExecution")
               (setq state
@@ -3374,6 +3621,36 @@ CONTEXT is either nil for ordinary transcript rendering or `approval'."
             buffer
             (codex-ide--item-detail-line "tool call failed")
             'error)))
+        ("collabAgentToolCall"
+         (progn
+           (when state
+             (let ((rendered-lines
+                    (codex-ide--render-collab-agent-details
+                     buffer
+                     item
+                     t
+                     session
+                     item-id)))
+               (when rendered-lines
+                 (codex-ide--put-item-state
+                  session
+                  item-id
+                  (plist-put
+                   state
+                   :rendered-detail-lines
+                   (append (plist-get state :rendered-detail-lines)
+                           rendered-lines))))))
+           (when-let* ((messages-text
+                        (codex-ide--collab-agent-final-messages-text item)))
+             (let ((state (or (codex-ide--item-state session item-id) '())))
+               (codex-ide--put-item-state
+                session
+                item-id
+                (plist-put state :result-display-text messages-text)))
+             (codex-ide--complete-item-result-block
+              session
+              item-id
+              messages-text))))
         ("webSearch"
          (let* ((state (or state '()))
                 (rendered-lines
@@ -4417,6 +4694,16 @@ Mutating the returned table does not update the canonical approval store."
                "\n")
        'shadow))))
 
+(defun codex-ide--notification-belongs-to-session-p (session params)
+  "Return non-nil when notification PARAMS should mutate SESSION.
+Notifications without a `threadId' are treated as session-scoped for backward
+compatibility with older app-server payloads and global notifications."
+  (let ((notification-thread-id (alist-get 'threadId params))
+        (session-thread-id (codex-ide-session-thread-id session)))
+    (or (null notification-thread-id)
+        (null session-thread-id)
+        (equal notification-thread-id session-thread-id))))
+
 (defun codex-ide--handle-notification (&optional session message)
   "Handle a notification MESSAGE for SESSION."
   (setq session (or session (codex-ide--get-default-session-for-current-buffer)))
@@ -4424,7 +4711,14 @@ Mutating the returned table does not update the canonical approval store."
         (params (alist-get 'params message))
         (buffer (codex-ide-session-buffer session)))
     (codex-ide-log-message session "Received notification %s" method)
-    (pcase method
+    (if (not (codex-ide--notification-belongs-to-session-p session params))
+        (codex-ide-log-message
+         session
+         "Ignoring notification %s for thread %s (session thread %s)"
+         method
+         (alist-get 'threadId params)
+         (codex-ide-session-thread-id session))
+      (pcase method
       ("thread/started"
        (codex-ide--remember-reasoning-effort session params)
        (codex-ide--remember-model-name session params)
@@ -4668,7 +4962,7 @@ Mutating the returned table does not update the canonical approval store."
         (format "\n[%s]\n"
                 (codex-ide-mcp-elicitation-format-completion params))
         'shadow))
-      (_ nil))))
+        (_ nil)))))
 
 (defun codex-ide--queued-prompts (session)
   "Return SESSION's queued prompt entries."

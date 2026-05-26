@@ -1782,6 +1782,189 @@
           (should-not (string-match-p "    hello\n    world"
                                       (buffer-string))))))))
 
+(ert-deftest codex-ide-collab-agent-tool-call-renders-clear-status ()
+  (with-temp-buffer
+    (codex-ide-session-mode)
+    (let ((session (make-codex-ide-session
+                    :directory default-directory
+                    :buffer (current-buffer)
+                    :status "idle"
+                    :item-states (make-hash-table :test 'equal))))
+      (setq-local codex-ide--session session)
+      (codex-ide--insert-input-prompt session "submitted prompt")
+      (codex-ide--begin-turn-display session)
+      (codex-ide--render-item-start
+       session
+       (list (cons 'id "call-1")
+             (cons 'type "collabAgentToolCall")
+             (cons 'tool "spawnAgent")
+             (cons 'status "inProgress")
+             (cons 'receiverThreadIds nil)
+             (cons 'prompt "Review codex-ide.el\nDo not edit.")))
+      (let ((text (buffer-string)))
+        (should (string-match-p
+                 "\\* Spawned sub-agent (in progress)" text))
+        (should (string-match-p "  └ status: in progress" text))
+        (should (string-match-p "  └ receivers: none" text))
+        (should (string-match-p
+                 "  └ prompt: Review codex-ide\\.el Do not edit\\."
+                 text)))
+      (let ((item (list (cons 'id "call-1")
+                        (cons 'type "collabAgentToolCall")
+                        (cons 'tool "spawnAgent")
+                        (cons 'status "completed")
+                        (cons 'receiverThreadIds ["thread-alpha"])
+                        (cons 'agentsStates
+                              (list
+                               (cons "thread-alpha"
+                                     (list (cons 'status "pendingInit")
+                                           (cons 'message nil))))))))
+        (codex-ide--render-item-completion session item))
+      (let ((text (buffer-string)))
+        (should (string-match-p "  └ status: completed" text))
+        (should (string-match-p "  └ receivers: alpha" text))
+        (should (string-match-p "  └ agent alpha: pendingInit" text))))))
+
+(ert-deftest codex-ide-collab-agent-wait-renders-agent-state-summary ()
+  (with-temp-buffer
+    (codex-ide-session-mode)
+    (let ((session (make-codex-ide-session
+                    :directory default-directory
+                    :buffer (current-buffer)
+                    :status "idle"
+                    :item-states (make-hash-table :test 'equal))))
+      (setq-local codex-ide--session session)
+      (codex-ide--insert-input-prompt session "submitted prompt")
+      (codex-ide--begin-turn-display session)
+      (codex-ide--render-item-start
+       session
+       (list (cons 'id "call-1")
+             (cons 'type "collabAgentToolCall")
+             (cons 'tool "wait")
+             (cons 'status "inProgress")
+             (cons 'receiverThreadIds ["thread-a" "thread-b"])))
+      (let ((item (list (cons 'id "call-1")
+                        (cons 'type "collabAgentToolCall")
+                        (cons 'tool "wait")
+                        (cons 'status "completed")
+                        (cons 'receiverThreadIds ["thread-a"])
+                        (cons 'agentsStates
+                              (list
+                               (cons "thread-a"
+                                     (list (cons 'status "completed")
+                                           (cons 'message "Final message body"))))))))
+        (codex-ide--render-item-completion session item))
+      (let ((text (buffer-string)))
+        (should (string-match-p
+                 "\\* Waited for sub-agents (in progress)" text))
+        (should (string-match-p "  └ receivers: 2 agents: a, b" text))
+        (should (string-match-p "  └ receivers: a" text))
+        (should (string-match-p
+                 "  └ agent a: completed (message available)"
+                 text))
+        (should-not (string-match-p "Final message body" text))))))
+
+(ert-deftest codex-ide-collab-agent-final-messages-render-folded-inline ()
+  (with-temp-buffer
+    (codex-ide-session-mode)
+    (let ((session (make-codex-ide-session
+                    :directory default-directory
+                    :buffer (current-buffer)
+                    :status "idle"
+                    :item-states (make-hash-table :test 'equal))))
+      (setq-local codex-ide--session session)
+      (codex-ide--insert-input-prompt session "submitted prompt")
+      (codex-ide--begin-turn-display session)
+      (codex-ide--render-item-start
+       session
+       (list (cons 'id "call-1")
+             (cons 'type "collabAgentToolCall")
+             (cons 'tool "wait")
+             (cons 'status "inProgress")
+             (cons 'receiverThreadIds ["thread-a"])))
+      (let ((item (list (cons 'id "call-1")
+                        (cons 'type "collabAgentToolCall")
+                        (cons 'tool "wait")
+                        (cons 'status "completed")
+                        (cons 'receiverThreadIds ["thread-a"])
+                        (cons 'agentsStates
+                              (list
+                               (cons "thread-a"
+                                     (list (cons 'status "completed")
+                                           (cons 'message
+                                                 "Final message body\nwith detail"))))))))
+        (codex-ide--render-item-completion session item))
+      (goto-char (point-min))
+      (search-forward "messages: 3 lines [expand]")
+      (let ((overlay (get-char-property
+                      (match-beginning 0)
+                      codex-ide-item-result-overlay-property)))
+        (should (overlayp overlay))
+        (should (overlay-get overlay :folded))
+        (should (overlay-get overlay 'invisible))
+        (should (equal (overlay-get overlay :result-full-text)
+                       "Sub-agent a\nFinal message body\nwith detail"))
+        (should-not (string-match-p "Final message body"
+                                    (buffer-string)))
+        (codex-ide-toggle-item-result-at-point (match-beginning 0))
+        (should-not (overlay-get overlay 'invisible))
+        (should (string-match-p "Sub-agent a" (buffer-string)))
+        (should (string-match-p "Final message body" (buffer-string)))
+        (should (string-match-p "messages: 3 lines \\[fold\\]"
+                                (buffer-string)))))))
+
+(ert-deftest codex-ide-collab-agent-message-open-button-opens-agent-buffer ()
+  (let ((buffer-name "*codex-sub-agent[codex-ide:a]*"))
+    (when-let* ((buffer (get-buffer buffer-name)))
+      (kill-buffer buffer))
+    (unwind-protect
+        (with-temp-buffer
+          (codex-ide-session-mode)
+          (let ((session (make-codex-ide-session
+                          :directory default-directory
+                          :buffer (current-buffer)
+                          :status "idle"
+                          :item-states (make-hash-table :test 'equal))))
+            (setq-local codex-ide--session session)
+            (codex-ide--insert-input-prompt session "submitted prompt")
+            (codex-ide--begin-turn-display session)
+            (codex-ide--render-item-start
+             session
+             (list (cons 'id "call-1")
+                   (cons 'type "collabAgentToolCall")
+                   (cons 'tool "wait")
+                   (cons 'status "inProgress")
+                   (cons 'receiverThreadIds ["thread-agent-a"])))
+            (codex-ide--render-item-completion
+             session
+             (list (cons 'id "call-1")
+                   (cons 'type "collabAgentToolCall")
+                   (cons 'tool "wait")
+                   (cons 'status "completed")
+                   (cons 'receiverThreadIds ["thread-agent-a"])
+                   (cons 'agentsStates
+                         (list
+                          (cons "thread-agent-a"
+                                (list (cons 'status "completed")
+                                      (cons 'message
+                                            "Agent-specific final message")))))))
+            (goto-char (point-min))
+            (search-forward "agent a: completed (message available)")
+            (search-forward "[open]")
+            (let ((action (button-get (button-at (match-beginning 0))
+                                      'action)))
+              (should action)
+              (funcall action nil))
+            (should (get-buffer buffer-name))
+            (with-current-buffer buffer-name
+              (should (eq major-mode 'special-mode))
+              (should (string-match-p "Sub-agent a" (buffer-string)))
+              (should (string-match-p "Parent item: call-1" (buffer-string)))
+              (should (string-match-p "Agent-specific final message"
+                                      (buffer-string))))))
+      (when-let* ((buffer (get-buffer buffer-name)))
+        (kill-buffer buffer)))))
+
 (ert-deftest codex-ide-command-output-face-extends-lines ()
   (should (eq (face-attribute 'codex-ide-command-output-face :extend nil t)
               t)))
@@ -5590,6 +5773,59 @@
 				    (should (string= (codex-ide-session-status session) "error"))
 				    (should (string-match-p "Codex:Error"
 							    (codex-ide-renderer-mode-line-status session))))))))
+
+(ert-deftest codex-ide-ignores-notifications-for-other-threads ()
+  (with-temp-buffer
+    (codex-ide-session-mode)
+    (let ((session (make-codex-ide-session
+                    :buffer (current-buffer)
+                    :status "running"
+                    :current-turn-id "parent-turn"
+                    :output-prefix-inserted t
+                    :item-states (make-hash-table :test 'equal))))
+      (setq-local codex-ide--session session)
+      (setf (codex-ide-session-thread-id session) "parent-thread")
+      (codex-ide--insert-input-prompt session nil)
+      (codex-ide--refresh-input-placeholder session)
+      (codex-ide--handle-notification
+       session
+       '((method . "thread/status/changed")
+         (params . ((threadId . "child-thread")
+                    (status . ((type . "idle")))))))
+      (codex-ide--handle-notification
+       session
+       '((method . "turn/started")
+         (params . ((threadId . "child-thread")
+                    (turn . ((id . "child-turn")))))))
+      (codex-ide--handle-notification
+       session
+       '((method . "item/agentMessage/delta")
+         (params . ((threadId . "child-thread")
+                    (turnId . "child-turn")
+                    (itemId . "child-message")
+                    (delta . "child output")))))
+      (codex-ide--handle-notification
+       session
+       '((method . "turn/completed")
+         (params . ((threadId . "child-thread")
+                    (turn . ((id . "child-turn")))))))
+      (should (equal (codex-ide-session-current-turn-id session) "parent-turn"))
+      (should (equal (codex-ide-session-status session) "running"))
+      (should (codex-ide-session-output-prefix-inserted session))
+      (should (equal (codex-ide-test--input-placeholder-text session)
+                     "Running..."))
+      (with-current-buffer (codex-ide-session-buffer session)
+        (should-not (string-match-p "child output" (buffer-string))))
+      (codex-ide--handle-notification
+       session
+       '((method . "turn/completed")
+         (params . ((threadId . "parent-thread")
+                    (turn . ((id . "parent-turn")))))))
+      (should-not (codex-ide-session-current-turn-id session))
+      (should-not (codex-ide-session-output-prefix-inserted session))
+      (should (equal (codex-ide-session-status session) "idle"))
+      (should (equal (codex-ide-test--input-placeholder-text session)
+                     codex-ide-prompt-placeholder-text)))))
 
 (ert-deftest codex-ide-error-notification-handles-authentication-failures-gracefully ()
   (let ((project-dir (codex-ide-test--make-temp-project)))
