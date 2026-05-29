@@ -89,6 +89,40 @@
 								    second-text))
 					    (should (string-match-p "Explain again" second-text)))))))))))
 
+(ert-deftest codex-ide-compose-turn-input-obeys-emacs-context-policy ()
+  (let* ((project-dir (codex-ide-test--make-temp-project))
+         (file-path (codex-ide-test--make-project-file
+                     project-dir "src/example.el" "(message \"hello\")\n")))
+    (codex-ide-test-with-fixture project-dir
+				 (let ((codex-ide-session-baseline-prompt "Session instructions")
+				       (cases '((all t t)
+						(session t nil)
+						(prompt nil t)
+						(nil nil nil))))
+				   (with-current-buffer (find-file-noselect file-path)
+				     (setq-local default-directory (file-name-as-directory project-dir))
+				     (goto-char (point-min))
+				     (codex-ide--track-active-buffer (current-buffer)))
+				   (dolist (case cases)
+				     (let* ((codex-ide-emacs-context-policy (nth 0 case))
+					    (expect-session (nth 1 case))
+					    (expect-prompt (nth 2 case))
+					    (session (codex-ide--create-process-session))
+					    (text (alist-get
+						   'text
+						   (aref (let ((codex-ide--session session))
+							   (codex-ide--compose-turn-input "Explain this"))
+							 0))))
+				       (should (eq expect-session
+						   (not (not (string-match-p
+							       "\\[Emacs session context\\]"
+							       text)))))
+				       (should (eq expect-prompt
+						   (not (not (string-match-p
+							       "\\[Emacs prompt context\\]"
+							       text)))))
+				       (should (string-match-p "Explain this" text))))))))
+
 (ert-deftest codex-ide-compose-turn-input-includes-selected-region-when-active ()
   (let* ((project-dir (codex-ide-test--make-temp-project))
          (file-path (codex-ide-test--make-project-file
@@ -277,7 +311,7 @@
 					     (should (string-match-p "Buffer:  \\*codex-ide-origin\\*" formatted))
 					     (should (string-match-p "Cursor: point 4, line 1, column 3" formatted))
 					     (should (string-match-p
-						      (regexp-quote "Context:  *codex-ide-origin* 1:3")
+						      (regexp-quote "Focus:  *codex-ide-origin* 1:3")
 						      summary)))))
 				     (kill-buffer origin-buffer))))))
 
@@ -383,7 +417,7 @@
                            (end-column . 9)
                            (text . ,selection-text)))))))
     (should (string-match-p
-             (regexp-quote "Context: example.el 12:4 selection=\"selected\"")
+             (regexp-quote "Focus: example.el 12:4 selection=\"selected\"")
              summary))))
 
 (ert-deftest codex-ide-format-buffer-context-summary-uses-range-for-long-selection-text ()
@@ -401,7 +435,7 @@
                            (end-column . 14)
                            (text . ,selection-text)))))))
     (should (string-match-p
-             (regexp-quote "Context: example.el 12:4 selection=2:1-2:14")
+             (regexp-quote "Focus: example.el 12:4 selection=2:1-2:14")
              summary))))
 
 (ert-deftest codex-ide-format-buffer-context-summary-escapes-selection-newlines ()
@@ -419,7 +453,7 @@
                            (end-column . 4)
                            (text . ,selection-text)))))))
     (should (string-match-p
-             (regexp-quote "Context: example.el 12:4 selection=\"a\\\\nb\"")
+             (regexp-quote "Focus: example.el 12:4 selection=\"a\\\\nb\"")
              summary))))
 
 (provide 'codex-ide-context-tests)

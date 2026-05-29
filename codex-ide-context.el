@@ -29,6 +29,8 @@
 (require 'subr-x)
 (require 'codex-ide-core)
 
+(defvar codex-ide-emacs-context-policy 'all
+  "Which Emacs context blocks to include in submitted prompts.")
 (defvar codex-ide-session-baseline-prompt)
 
 (defconst codex-ide--session-context-open-tag "[Emacs session context]")
@@ -153,7 +155,7 @@ The return value contains 1-based line numbers and 0-based columns."
     (string-join
      (delq nil
            (list
-            (format "Context: %s %s:%s"
+            (format "Focus: %s %s:%s"
                     (alist-get 'buffer-name context)
                     (alist-get 'line context)
                     (alist-get 'column context))
@@ -179,6 +181,12 @@ The return value contains 1-based line numbers and 0-based columns."
           codex-ide--prompt-context-open-tag
           codex-ide--discarded-buffer-context-message
           codex-ide--prompt-context-close-tag))
+
+(defun codex-ide--emacs-context-policy-includes-p (kind)
+  "Return non-nil when `codex-ide-emacs-context-policy' includes KIND.
+KIND is either `session' or `prompt'."
+  (or (eq codex-ide-emacs-context-policy 'all)
+      (eq codex-ide-emacs-context-policy kind)))
 
 (defun codex-ide--context-with-selected-region (context &optional buffer)
   "Return CONTEXT augmented with BUFFER's active region, when present."
@@ -256,11 +264,17 @@ Return an alist containing either `(buffer . BUFFER)' or `(discarded . t)'."
 
 (defun codex-ide--compose-turn-payload (prompt)
   "Build prompt payload metadata for PROMPT in the current working directory."
-  (let* ((context-payload (codex-ide--context-payload-for-prompt))
+  (let* ((context-payload
+          (when (codex-ide--emacs-context-policy-includes-p 'prompt)
+            (codex-ide--context-payload-for-prompt)))
          (context-prefix (alist-get 'formatted context-payload))
          (session (codex-ide--get-default-session-for-current-buffer))
-         (session-prefix (unless (codex-ide--session-metadata-get session :session-context-sent)
-                           (codex-ide--format-session-context)))
+         (session-prefix
+          (when (and (codex-ide--emacs-context-policy-includes-p 'session)
+                     (not (codex-ide--session-metadata-get
+                           session
+                           :session-context-sent)))
+            (codex-ide--format-session-context)))
          (prompt-prefix (unless (codex-ide--leading-emacs-context-prefix-p prompt)
                           context-prefix))
          (full-prompt (string-join (delq nil (list session-prefix prompt-prefix prompt))

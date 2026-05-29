@@ -372,6 +372,11 @@ window size change."
   "Face used for item detail lines."
   :group 'codex-ide)
 
+(defface codex-ide-usage-notification-face
+  '((t :inherit codex-ide-item-detail-face))
+  "Face used for transcript usage metadata notifications."
+  :group 'codex-ide)
+
 (defconst codex-ide-prompt-start-property 'codex-ide-prompt-start
   "Text property used to mark the first character of a user prompt.")
 
@@ -1112,6 +1117,32 @@ Return (START . END)."
      (t
       (insert "\n\n")))
     (codex-ide-renderer-freeze-region start (point))
+    (cons start (point))))
+
+(defun codex-ide-renderer-insert-status-block (heading details)
+  "Insert a status block with HEADING and DETAILS.
+HEADING is rendered with `codex-ide-item-summary-face'.  DETAILS are rendered
+as transcript detail rows with `codex-ide-item-detail-face'.  Return
+(START . END)."
+  (let ((start (point)))
+    (codex-ide-renderer-insert-read-only
+     heading
+     'codex-ide-item-summary-face)
+    (dolist (detail details)
+      (codex-ide-renderer-insert-read-only
+       (format "\n  └ %s" detail)
+       'codex-ide-item-detail-face))
+    (codex-ide-renderer-insert-read-only "\n\n")
+    (cons start (point))))
+
+(defun codex-ide-renderer-insert-metadata-line (text &optional face)
+  "Insert a muted transcript metadata line with TEXT.
+FACE defaults to `codex-ide-item-detail-face'.  Return (START . END)."
+  (let ((start (point)))
+    (codex-ide-renderer-insert-read-only
+     text
+     (or face 'codex-ide-item-detail-face))
+    (codex-ide-renderer-insert-read-only "\n\n")
     (cons start (point))))
 
 (defun codex-ide-renderer-insert-output-separator (&optional properties)

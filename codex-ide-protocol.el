@@ -38,7 +38,7 @@
 (declare-function codex-ide--ensure-active-buffer-tracking "codex-ide-core" ())
 (declare-function codex-ide--query-session-for-thread-selection "codex-ide-session" (&optional directory))
 (declare-function codex-ide--ensure-query-session-for-thread-selection "codex-ide-session" (&optional directory))
-(declare-function codex-ide--update-header-line "codex-ide-transcript" (&optional session))
+(declare-function codex-ide--update-header-line "codex-ide-header" (&optional session))
 
 (defvar codex-ide-request-timeout)
 (defvar codex-ide-model)

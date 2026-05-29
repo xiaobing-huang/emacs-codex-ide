@@ -102,6 +102,39 @@
     (should-not (codex-ide--environment-variable-value "COLORTERM" env))
     (should-not (codex-ide--environment-variable-value "CLICOLOR" env))))
 
+(ert-deftest codex-ide-schedule-usage-refresh-defers-rate-limit-read ()
+  (let ((project-dir (codex-ide-test--make-temp-project))
+        (scheduled nil)
+        (refreshed nil))
+    (codex-ide-test-with-fixture project-dir
+      (codex-ide-test-with-fake-processes
+        (cl-letf (((symbol-function 'run-at-time)
+                   (lambda (seconds repeat function &rest args)
+                     (setq scheduled (list seconds repeat function args))
+                     'fake-usage-refresh-timer))
+                  ((symbol-function 'timerp)
+                   (lambda (timer)
+                     (eq timer 'fake-usage-refresh-timer)))
+                  ((symbol-function 'cancel-timer)
+                   (lambda (_timer) nil))
+                  ((symbol-function 'codex-ide-usage-refresh-rate-limits)
+                   (lambda (session)
+                     (setq refreshed session)))
+                  ((symbol-function 'codex-ide-log-message)
+                   (lambda (&rest _) nil)))
+          (let ((session (codex-ide--create-process-session)))
+            (codex-ide--schedule-usage-refresh session)
+            (should scheduled)
+            (should-not refreshed)
+            (should (= (nth 0 scheduled)
+                       codex-ide--deferred-usage-refresh-delay))
+            (apply (nth 2 scheduled) (nth 3 scheduled))
+            (should (eq refreshed session))
+            (should-not
+             (codex-ide--session-metadata-get
+              session
+              :deferred-usage-refresh-timer))))))))
+
 (ert-deftest codex-ide-toggle-logging-enabled-flips-state ()
   (let ((codex-ide-logging-enabled nil))
     (codex-ide-toggle-logging-enabled)
@@ -1312,6 +1345,124 @@
                   (codex-ide-session-input-prompt-start-marker session)))
       (should (equal (codex-ide-test--prompt-prefix-at-line) "> ")))))
 
+(ert-deftest codex-ide-finish-turn-appends-usage-notification-before-next-prompt ()
+  (with-temp-buffer
+    (codex-ide-session-mode)
+    (let ((session (make-codex-ide-session
+                    :buffer (current-buffer)
+                    :status "running"
+                    :current-turn-id "turn-1"
+                    :item-states (make-hash-table :test 'equal))))
+      (setq-local codex-ide--session session)
+      (codex-ide--session-metadata-put
+       session
+       :usage-transcript-previous-token-usage
+       '((total . ((totalTokens . 1000)))))
+      (codex-ide--session-metadata-put
+       session
+       :token-usage
+       '((total . ((totalTokens . 15700)))))
+      (codex-ide-usage-note-updated session 'context)
+      (codex-ide--insert-input-prompt session "submitted prompt")
+      (codex-ide--begin-turn-display session)
+      (codex-ide--replace-current-input session "steer draft")
+      (codex-ide--append-to-buffer (current-buffer) "Final answer.\n")
+      (codex-ide--finish-turn session)
+      (should (string-match-p
+               (rx "Final answer."
+                   "\n\nUsage updated: tokens +14.7k"
+                   "\n\n\n> steer draft\n\n"
+                   string-end)
+               (buffer-string)))
+      (search-backward "Usage updated")
+      (should (eq (get-text-property (point) 'face)
+                  'codex-ide-usage-notification-face))
+      (should-not (codex-ide--session-metadata-get
+                   session
+                   :usage-transcript-pending-kinds)))))
+
+(ert-deftest codex-ide-append-to-buffer-separates-idle-active-prompt-from-output ()
+  (with-temp-buffer
+    (codex-ide-session-mode)
+    (let ((session (make-codex-ide-session
+                    :buffer (current-buffer)
+                    :status "idle"
+                    :item-states (make-hash-table :test 'equal))))
+      (setq-local codex-ide--session session)
+      (codex-ide--insert-input-prompt session "draft prompt")
+      (codex-ide--append-to-buffer (current-buffer) "* Context: 26.4k tokens used\n\n")
+      (should (string-match-p
+               (rx "* Context: 26.4k tokens used" "\n\n\n" "> draft prompt")
+               (buffer-string)))
+      (should-not (string-match-p
+                   (rx "> draft prompt" (* anything) "* Context:")
+                   (buffer-string)))
+      (should (equal (codex-ide--current-input session) "draft prompt")))))
+
+(ert-deftest codex-ide-status-block-separates-from-prior-output-and-uses-item-faces ()
+  (with-temp-buffer
+    (codex-ide-session-mode)
+    (insert "Agent text.")
+    (codex-ide-transcript-append-status-block
+     (current-buffer)
+     "* Usage updated: tokens +14.8k"
+     '("12%/5h quota used; resets at 13:25"
+       "14.8k tokens in latest update"))
+    (should (equal (buffer-string)
+                   "Agent text.\n\n* Usage updated: tokens +14.8k\n  └ 12%/5h quota used; resets at 13:25\n  └ 14.8k tokens in latest update\n\n"))
+    (goto-char (point-min))
+    (search-forward "* Usage updated")
+    (should (eq (get-text-property (match-beginning 0) 'face)
+                'codex-ide-item-summary-face))
+    (search-forward "  └ 12%/5h quota used")
+    (should (eq (get-text-property (match-beginning 0) 'face)
+                'codex-ide-item-detail-face))
+    (should-not (string-match-p "  - " (buffer-string)))))
+
+(ert-deftest codex-ide-status-block-inserts-before-idle-active-prompt-display ()
+  (with-temp-buffer
+    (codex-ide-session-mode)
+    (let ((session (make-codex-ide-session
+                    :buffer (current-buffer)
+                    :status "idle"
+                    :item-states (make-hash-table :test 'equal))))
+      (setq-local codex-ide--session session)
+      (codex-ide--insert-input-prompt session "draft prompt")
+      (codex-ide-transcript-append-status-block
+       (current-buffer)
+       "* Usage updated"
+       '("14.7k tokens used"))
+      (should (equal (buffer-string)
+                     "* Usage updated\n  └ 14.7k tokens used\n\n\n> draft prompt\n\n"))
+      (should (eq (get-text-property (point-min) 'face)
+                  'codex-ide-item-summary-face))
+      (goto-char (marker-position
+                  (codex-ide-session-input-prompt-start-marker session)))
+      (should (equal (codex-ide-test--prompt-prefix-at-line) "> "))
+      (should (equal (codex-ide--current-input session) "draft prompt")))))
+
+(ert-deftest codex-ide-metadata-line-inserts-before-idle-active-prompt-display ()
+  (with-temp-buffer
+    (codex-ide-session-mode)
+    (let ((session (make-codex-ide-session
+                    :buffer (current-buffer)
+                    :status "idle"
+                    :item-states (make-hash-table :test 'equal))))
+      (setq-local codex-ide--session session)
+      (codex-ide--insert-input-prompt session "draft prompt")
+      (codex-ide-transcript-append-metadata-line
+       (current-buffer)
+       "Usage updated: tokens +14.7k"
+       'codex-ide-usage-notification-face)
+      (should (equal (buffer-string)
+                     "Usage updated: tokens +14.7k\n\n\n> draft prompt\n\n"))
+      (should (eq (get-text-property (point-min) 'face)
+                  'codex-ide-usage-notification-face))
+      (goto-char (marker-position
+                  (codex-ide-session-input-prompt-start-marker session)))
+      (should (equal (codex-ide-test--prompt-prefix-at-line) "> "))
+      (should (equal (codex-ide--current-input session) "draft prompt")))))
+
 (ert-deftest codex-ide-agent-delta-separates-active-prompt-from-output ()
   (with-temp-buffer
     (codex-ide-session-mode)
@@ -2151,14 +2302,14 @@
       (codex-ide--insert-input-prompt session "First line\nsecond line")
       (codex-ide--freeze-active-input-prompt
        session
-       "Context: foo.el 1:2"
+       "Focus: foo.el 1:2"
        'steering)
       (should (string-match-p
                (rx "\n  ↳ steer:\n"
                    "    First line\n"
                    "    second line\n"
                    "\n"
-                   "    Context: foo.el 1:2")
+                   "    Focus: foo.el 1:2")
                (buffer-string)))
       (goto-char (point-min))
       (search-forward "↳ steer:")
@@ -2176,7 +2327,7 @@
       (search-forward "First line")
       (should (eq (get-text-property (match-beginning 0) 'face)
                   'codex-ide-steering-prompt-face))
-      (search-forward "Context: foo.el 1:2")
+      (search-forward "Focus: foo.el 1:2")
       (should (eq (get-text-property (match-beginning 0) 'face)
                   'codex-ide-item-detail-face)))))
 
@@ -3722,7 +3873,7 @@
 					  (let ((buffer-text (buffer-string))
 						(input (alist-get 'input submitted)))
 					    (should (string-match-p
-						     "\n> Explain this\n\nContext: example\\.el 1:3"
+						     "\n> Explain this\n\nFocus: example\\.el 1:3"
 						     buffer-text))
 					    (goto-char (point-min))
 					    (re-search-forward "^> Explain this$")
@@ -4065,13 +4216,14 @@
 						       (windowDurationMins . 10080)))
 					 (planType . "prolite")))
 				      (codex-ide--session-metadata-put
-				       session :token-usage
-				       '((total . ((totalTokens . 305500)))
-					 (modelContextWindow . 258400)
-					 (last . ((inputTokens . 42800)
-						  (cachedInputTokens . 26100)
-						  (outputTokens . 244)
-						  (reasoningOutputTokens . 68)))))
+					       session :token-usage
+					       '((total . ((totalTokens . 305500)))
+						 (modelContextWindow . 258400)
+						 (last . ((totalTokens . 43112)
+							  (inputTokens . 42800)
+							  (cachedInputTokens . 26100)
+							  (outputTokens . 244)
+							  (reasoningOutputTokens . 68)))))
 				      (with-current-buffer (find-file-noselect file-path)
 					(setq-local default-directory (file-name-as-directory project-dir))
 					(rename-buffer "focused-source-buffer" t)
@@ -4083,8 +4235,89 @@
 					(codex-ide--update-header-line session)
 					(should
 					 (equal
-					  (format-mode-line header-line-format)
-					  " Focus: focused-source-buffer | Model: gpt-5.4 | Quota: 15%/5h 3%/wk (prolite) | Context: 305.5k/258.4k | Last[in,cache,out,reason]: 42.8k,26.1k,244,68"))))))))
+						  (format-mode-line header-line-format)
+						  " Focus: focused-source-buffer | Model: gpt-5.4 | Quota: 15%/5h 3%/wk (prolite) | Context: 43.1k/258.4k (305.5k total)"))))))))
+
+  (ert-deftest codex-ide-header-line-shows-compact-rate-limit-resets ()
+    (let* ((project-dir (codex-ide-test--make-temp-project))
+           (today (encode-time 0 0 12 28 5 2026))
+           (today-reset (floor (float-time (encode-time 0 34 13 28 5 2026))))
+           (future-reset (floor (float-time (encode-time 0 42 15 1 6 2026)))))
+      (codex-ide-test-with-fixture project-dir
+				   (codex-ide-test-with-fake-processes
+				    (let ((session (codex-ide--create-process-session)))
+				      (codex-ide--session-metadata-put
+				       session :rate-limits
+				       `((primary . ((usedPercent . 20)
+						      (windowDurationMins . 300)
+						      (resetsAt . ,today-reset)))
+					 (secondary . ((usedPercent . 3)
+						       (windowDurationMins . 10080)
+						       (resetsAt . ,future-reset)))
+					 (planType . "prolite")
+					 (rateLimitReachedType . "primary")))
+				      (cl-letf (((symbol-function 'current-time)
+						 (lambda () today)))
+					(with-current-buffer (codex-ide-session-buffer session)
+					  (codex-ide--update-header-line session)
+					  (should
+					   (string-match-p
+					    "Quota: 20%→13:34 3%→Jun1 (prolite) limit:primary"
+					    (format-mode-line header-line-format)))
+					  (should
+					   (string-match-p
+					    "Quota: 20%%→13:34 3%%→Jun1 (prolite) limit:primary"
+					    (substring-no-properties header-line-format))))))))))
+
+  (ert-deftest codex-ide-usage-notifications-schedule-coalesced-live-refresh ()
+    (let ((project-dir (codex-ide-test--make-temp-project)))
+      (codex-ide-test-with-fixture project-dir
+				   (codex-ide-test-with-fake-processes
+				    (let ((session (codex-ide--create-process-session))
+					  (updates 0)
+					  (scheduled 0)
+					  (timer (timer-create)))
+				      (cl-letf (((symbol-function 'codex-ide--update-header-line)
+						 (lambda (_session)
+						   (setq updates (1+ updates))))
+						((symbol-function 'run-at-time)
+						 (lambda (&rest _args)
+						   (setq scheduled (1+ scheduled))
+						   timer)))
+					(codex-ide--handle-notification
+					 session
+					 '((method . "thread/tokenUsage/updated")
+					   (params . ((threadId . "thread-1")
+						      (tokenUsage
+						       . ((total . ((totalTokens . 1000)))
+							  (last . ((totalTokens . 100)))
+							  (modelContextWindow . 10000)))))))
+					(codex-ide--handle-notification
+					 session
+					 '((method . "account/rateLimits/updated")
+					   (params . ((threadId . "thread-1")
+						      (rateLimits
+						       . ((primary . ((usedPercent . 1)
+								      (windowDurationMins . 300)))))))))
+					(should (= updates 2))
+					(should (= scheduled 1))
+					(should (eq (codex-ide--session-metadata-get
+						     session
+						     :live-usage-refresh-timer)
+						    timer))
+					(should (equal
+						 (codex-ide--session-metadata-get
+						  session
+						  :token-usage)
+						 '((total . ((totalTokens . 1000)))
+						   (last . ((totalTokens . 100)))
+						   (modelContextWindow . 10000))))
+					(should (equal
+						 (codex-ide--session-metadata-get
+						  session
+						  :rate-limits)
+						 '((primary . ((usedPercent . 1)
+							       (windowDurationMins . 300))))))))))))
 
   (ert-deftest codex-ide-header-line-shows-model-name ()
     (let ((project-dir (codex-ide-test--make-temp-project)))
@@ -5505,6 +5738,117 @@
 					      (should (string-match-p "\\+new" text)))))
 				      (when (buffer-live-p diff-buffer)
 					(kill-buffer diff-buffer))))))))
+
+(ert-deftest codex-ide-file-change-approval-keeps-buttons-out-of-active-prompt ()
+  (let ((project-dir (codex-ide-test--make-temp-project))
+        (codex-ide-diff-auto-display-policy 'approval-only)
+        (codex-ide-diff-inline-fold-threshold 4))
+    (codex-ide-test-with-fixture project-dir
+				 (codex-ide-test-with-fake-processes
+				  (let* ((session (codex-ide--create-process-session))
+					 (diff-text (string-join
+						     '("diff --git a/foo.txt b/foo.txt"
+						       "--- a/foo.txt"
+						       "+++ b/foo.txt"
+						       "@@ -1 +1 @@"
+						       "-old"
+						       "+new")
+						     "\n")))
+				    (when (codex-ide--input-prompt-active-p session)
+				      (codex-ide--delete-active-input-prompt session))
+				    (setf (codex-ide-session-current-turn-id session) "turn-file-approval"
+					  (codex-ide-session-status session) "running")
+				    (codex-ide--insert-input-prompt session)
+				    (cl-letf (((symbol-function 'run-at-time)
+					       (lambda (_time _repeat function)
+						 (funcall function)))
+					      ((symbol-function 'get-buffer-window)
+					       (lambda (&rest _)
+						 (selected-window)))
+					      ((symbol-function 'codex-ide-display-buffer)
+					       (lambda (_buffer &optional _action) (selected-window)))
+					      ((symbol-function 'codex-ide-diff-open-buffer)
+					       (lambda (_text &optional _buffer-name _directory)
+						 nil))
+					      ((symbol-function 'message)
+					       (lambda (&rest _) nil)))
+				      (codex-ide--handle-notification
+				       session
+				       `((method . "item/started")
+					 (params . ((item . ((type . "fileChange")
+							     (id . "file-change-1")
+							     (changes . (((path . "foo.txt")
+									  (diff . ,diff-text))))
+							     (status . "inProgress")))))))
+				      (codex-ide--handle-file-change-approval
+				       session
+				       45
+				       '((itemId . "file-change-1")
+					 (reason . "edit foo.txt"))))
+				    (with-current-buffer (codex-ide-session-buffer session)
+				      (let* ((text (buffer-string))
+					     (diff-pos (string-match-p
+							"diff: foo\\.txt"
+							text))
+					     (accept-pos (string-match-p "\\[accept\\]" text))
+					     (prompt-pos (string-match-p
+							  "\n> "
+							  text
+							  (or accept-pos 0))))
+					(should diff-pos)
+					(should accept-pos)
+					(should prompt-pos)
+					(should (< diff-pos accept-pos))
+					(should (< accept-pos prompt-pos)))
+				      (goto-char (point-min))
+				      (search-forward "[accept]")
+				      (should-not (eq (get-char-property (match-beginning 0) 'field)
+						      'codex-ide-active-input))
+				      (search-forward "[cancel turn]")
+				      (should-not (eq (get-char-property (match-beginning 0) 'field)
+						      'codex-ide-active-input))
+				      (search-forward "> ")
+				      (should (eq (get-text-property (match-beginning 0) 'field)
+						  'codex-ide-prompt-prefix))
+				      (should (eq (get-char-property (point) 'field)
+						  'codex-ide-active-input))))))))
+
+(ert-deftest codex-ide-local-transcript-insertion-keeps-item-results-before-prompt ()
+  (let ((project-dir (codex-ide-test--make-temp-project)))
+    (codex-ide-test-with-fixture project-dir
+				 (codex-ide-test-with-fake-processes
+				  (let ((session (codex-ide--create-process-session)))
+				    (when (codex-ide--input-prompt-active-p session)
+				      (codex-ide--delete-active-input-prompt session))
+				    (setf (codex-ide-session-current-turn-id session) "turn-local-insert"
+					  (codex-ide-session-status session) "running")
+				    (codex-ide--insert-input-prompt session)
+				    (codex-ide--put-item-state
+				     session
+				     "nested-command"
+				     '(:type "commandExecution"
+				       :item-result-label "command output"))
+				    (with-current-buffer (codex-ide-session-buffer session)
+				      (let ((inhibit-read-only t)
+					    (boundary (codex-ide--active-input-boundary-marker
+						       (current-buffer))))
+					(goto-char boundary)
+					(codex-ide-renderer-insert-read-only "Parent block\n")
+					(codex-ide--with-local-transcript-insertion
+					  (codex-ide--ensure-item-result-block
+					   session
+					   "nested-command")
+					  (codex-ide-renderer-insert-read-only "[after]\n")))
+				      (goto-char (point-min))
+				      (search-forward "command output:")
+				      (should-not (eq (get-char-property (match-beginning 0) 'field)
+						      'codex-ide-active-input))
+				      (search-forward "[after]")
+				      (should-not (eq (get-char-property (match-beginning 0) 'field)
+						      'codex-ide-active-input))
+				      (search-forward "> ")
+				      (should (eq (get-text-property (match-beginning 0) 'field)
+						  'codex-ide-prompt-prefix))))))))
 
 (ert-deftest codex-ide-file-change-approval-does-not-auto-open-diff-when-session-stays-hidden ()
   (let ((project-dir (codex-ide-test--make-temp-project))

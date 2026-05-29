@@ -35,6 +35,7 @@
 (require 'codex-ide-context)
 (require 'codex-ide-core)
 (require 'codex-ide-errors)
+(require 'codex-ide-header)
 (require 'codex-ide-log)
 (require 'codex-ide-mcp-bridge)
 (require 'codex-ide-mcp-elicitation)
@@ -43,6 +44,7 @@
 (require 'codex-ide-session-mode)
 (require 'codex-ide-threads)
 (require 'codex-ide-transcript)
+(require 'codex-ide-usage)
 (require 'codex-ide-window)
 
 (defvar codex-ide-cli-path)
@@ -57,6 +59,41 @@
 
 (declare-function codex-ide-delete-session-thread "codex-ide-delete-session-thread"
                   (thread-id &optional skip-confirmation))
+
+(defconst codex-ide--deferred-usage-refresh-delay 0.5
+  "Seconds to wait before refreshing account usage after showing a session.")
+
+(defun codex-ide--elapsed-ms (start-time)
+  "Return elapsed milliseconds since START-TIME."
+  (* 1000.0 (- (float-time) start-time)))
+
+(defun codex-ide--schedule-usage-refresh (session)
+  "Schedule a noncritical account usage refresh for SESSION."
+  (when (and session
+             (process-live-p (codex-ide-session-process session)))
+    (when-let* ((timer (codex-ide--session-metadata-get
+                        session
+                        :deferred-usage-refresh-timer)))
+      (when (timerp timer)
+        (cancel-timer timer)))
+    (codex-ide-log-message
+     session
+     "Scheduling account rate limits refresh in %.1fs"
+     codex-ide--deferred-usage-refresh-delay)
+    (codex-ide--session-metadata-put
+     session
+     :deferred-usage-refresh-timer
+     (run-at-time
+      codex-ide--deferred-usage-refresh-delay
+      nil
+      (lambda (refresh-session)
+        (when refresh-session
+          (codex-ide--session-metadata-put
+           refresh-session
+           :deferred-usage-refresh-timer
+           nil)
+          (codex-ide-usage-refresh-rate-limits refresh-session)))
+      session))))
 
 (defun codex-ide--detect-cli ()
   "Detect whether the Codex CLI is available."
@@ -129,6 +166,10 @@
       (codex-ide-log-message session "Cleaning up session state"))
     (when (process-live-p stderr-process)
       (delete-process stderr-process))
+    (when session
+      (codex-ide--cancel-live-usage-refresh session))
+    (when session
+      (codex-ide-usage-clear-transcript-notification session))
     (when session
       (setf (codex-ide-session-stderr-process session) nil))
     (when session
@@ -405,6 +446,8 @@ protocol requests such as thread listing."
             (codex-ide--resume-thread-into-session session thread-id "Resumed")
             (codex-ide--update-header-line session))
           (codex-ide--show-session-buffer session)
+          (unless (codex-ide--session-metadata-get session :rate-limits)
+            (codex-ide--schedule-usage-refresh session))
           session)
       (let ((default-directory directory))
         (setq session (codex-ide--create-process-session)))
@@ -412,6 +455,7 @@ protocol requests such as thread listing."
       (codex-ide--resume-thread-into-session session thread-id "Resumed")
       (codex-ide--update-header-line session)
       (codex-ide--show-session-buffer session :newly-created t)
+      (codex-ide--schedule-usage-refresh session)
       session)))
 
 (defun codex-ide--resume-thread-into-session (session thread-id action)
@@ -421,25 +465,37 @@ protocol requests such as thread listing."
   (unless (and (stringp thread-id)
                (not (string-empty-p thread-id)))
     (error "Invalid thread id: %S" thread-id))
-  (let ((thread-read
-         (condition-case err
-             (codex-ide--read-thread session thread-id t)
-           (error
-            (codex-ide-log-message
-             session
-             "Unable to read stored thread %s before %s: %s"
-             thread-id
-             (downcase action)
-             (error-message-string err))
-            nil))))
+  (let* ((resume-start (float-time))
+         (read-start (float-time))
+         (thread-read
+          (condition-case err
+              (codex-ide--read-thread session thread-id t)
+            (error
+             (codex-ide-log-message
+              session
+              "Unable to read stored thread %s before %s after %.0fms: %s"
+              thread-id
+              (downcase action)
+              (codex-ide--elapsed-ms read-start)
+              (error-message-string err))
+             nil))))
+    (codex-ide-log-message
+     session
+     "Resume thread/read completed in %.0fms"
+     (codex-ide--elapsed-ms read-start))
     (codex-ide--clear-session-model-name session)
     (codex-ide--remember-model-name session thread-read)
-    (let ((result
-           (codex-ide--request-sync
-            session
-            "thread/resume"
-            (with-current-buffer (codex-ide-session-buffer session)
-              (codex-ide--thread-resume-params thread-id session)))))
+    (let* ((thread-resume-start (float-time))
+           (result
+            (codex-ide--request-sync
+             session
+             "thread/resume"
+             (with-current-buffer (codex-ide-session-buffer session)
+               (codex-ide--thread-resume-params thread-id session)))))
+      (codex-ide-log-message
+       session
+       "Resume thread/resume completed in %.0fms"
+       (codex-ide--elapsed-ms thread-resume-start))
       (codex-ide--remember-reasoning-effort session result)
       (codex-ide--remember-model-name session result))
     (setf (codex-ide-session-thread-id session) thread-id)
@@ -452,7 +508,16 @@ protocol requests such as thread listing."
     (codex-ide--session-metadata-put session :session-context-sent t)
     (codex-ide-log-message session "%s thread %s" action thread-id)
     (when thread-read
-      (codex-ide--restore-thread-read-transcript session thread-read)))
+      (let ((restore-start (float-time)))
+        (codex-ide--restore-thread-read-transcript session thread-read)
+        (codex-ide-log-message
+         session
+         "Resume transcript restore completed in %.0fms"
+         (codex-ide--elapsed-ms restore-start))))
+    (codex-ide-log-message
+     session
+     "Resume thread setup completed in %.0fms"
+     (codex-ide--elapsed-ms resume-start)))
   session)
 
 (defun codex-ide--session-for-current-project ()
@@ -509,7 +574,9 @@ protocol requests such as thread listing."
           (if reused-session
               (progn
                 (message "Showing Codex session for thread %s" thread-id)
-                (codex-ide--show-session-buffer reused-session))
+                (codex-ide--show-session-buffer reused-session)
+                (unless (codex-ide--session-metadata-get reused-session :rate-limits)
+                  (codex-ide--schedule-usage-refresh reused-session)))
             (setq session (or created-session
                               (codex-ide--create-process-session))
                   created-session session)
@@ -541,6 +608,7 @@ protocol requests such as thread listing."
             (codex-ide--set-session-status session "idle" 'started)
             (codex-ide--update-header-line session)
             (codex-ide--show-session-buffer session :newly-created created-session)
+            (codex-ide--schedule-usage-refresh session)
             (codex-ide--track-active-buffer)
             (unless (codex-ide-session-output-prefix-inserted session)
               (codex-ide--ensure-input-prompt session))
@@ -784,6 +852,7 @@ protocol requests such as thread listing."
           (codex-ide--update-header-line new-session)
           (codex-ide--run-session-event 'reset new-session)
           (codex-ide--show-session-buffer new-session)
+          (codex-ide--schedule-usage-refresh new-session)
           (codex-ide--track-active-buffer)
           (message "Reset Codex in %s"
                    (file-name-nondirectory (directory-file-name working-dir)))

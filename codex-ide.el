@@ -134,6 +134,19 @@ status has no entry here, `codex-ide-steering-placeholder-text' is used."
   :group 'codex-ide)
 
 ;;;###autoload
+(defcustom codex-ide-emacs-context-policy 'all
+  "Which Emacs context blocks to include in submitted prompts.
+
+The session context block contains `codex-ide-session-baseline-prompt' and is
+sent at most once per thread.  The prompt context block contains the focused
+Emacs buffer, point, and active selection for each prompt."
+  :type '(choice (const :tag "Session and prompt context" all)
+                 (const :tag "Session context only" session)
+                 (const :tag "Prompt context only" prompt)
+                 (const :tag "No Emacs context" nil))
+  :group 'codex-ide)
+
+;;;###autoload
 (defcustom codex-ide-buffer-name-prefix "codex"
   "Prefix used when creating Codex session buffer names."
   :type 'string
@@ -258,12 +271,14 @@ thread-list limit."
 (require 'codex-ide-renderer)
 (require 'codex-ide-session-mode)
 (require 'codex-ide-protocol)
+(require 'codex-ide-header)
 (require 'codex-ide-thread-history)
 (require 'codex-ide-diff-data)
 (require 'codex-ide-diff-model)
 (require 'codex-ide-diff-view)
 (require 'codex-ide-rollout)
 (require 'codex-ide-threads)
+(require 'codex-ide-usage)
 (require 'codex-ide-transcript)
 (require 'codex-ide-transient)
 (require 'codex-ide-mcp-bridge)

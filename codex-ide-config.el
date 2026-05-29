@@ -18,7 +18,7 @@
 (require 'subr-x)
 (require 'codex-ide-core)
 
-(declare-function codex-ide--update-header-line "codex-ide-transcript" (&optional session))
+(declare-function codex-ide--update-header-line "codex-ide-header" (&optional session))
 (declare-function codex-ide--available-model-names "codex-ide-protocol" ())
 
 (defvar codex-ide-model)

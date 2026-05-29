@@ -20,7 +20,7 @@
 (declare-function codex-ide--context-with-selected-region "codex-ide-context" (context &optional buffer))
 (declare-function codex-ide--buffer-selection-context "codex-ide-context" (&optional buffer))
 (declare-function codex-ide--make-buffer-context "codex-ide-context" (&optional buffer &key working-dir))
-(declare-function codex-ide--update-header-line "codex-ide-transcript" (&optional session))
+(declare-function codex-ide--update-header-line "codex-ide-header" (&optional session))
 (declare-function codex-ide-log-message "codex-ide-log" (session format-string &rest args))
 
 (defvar codex-ide-buffer-name-function)
