@@ -65,6 +65,8 @@
   "Optional model name for new or resumed threads and later turns."
   :type '(choice (const :tag "Default" nil)
                  (string :tag "Model"))
+  :safe (lambda (value)
+          (or (null value) (stringp value)))
   :group 'codex-ide)
 
 ;;;###autoload
@@ -77,6 +79,9 @@
                  (const "medium")
                  (const "high")
                  (const "xhigh"))
+  :safe (lambda (value)
+          (or (null value)
+              (member value '("none" "minimal" "low" "medium" "high" "xhigh"))))
   :group 'codex-ide)
 
 ;;;###autoload

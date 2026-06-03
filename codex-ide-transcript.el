@@ -4725,253 +4725,262 @@ compatibility with older app-server payloads and global notifications."
          (alist-get 'threadId params)
          (codex-ide-session-thread-id session))
       (pcase method
-      ("thread/started"
-       (codex-ide--remember-reasoning-effort session params)
-       (codex-ide--remember-model-name session params)
-       (when-let* ((thread-id (alist-get 'id (alist-get 'thread params))))
-         (setf (codex-ide-session-thread-id session) thread-id)
-         (codex-ide--mark-session-thread-attached session)
-         (codex-ide--run-session-event
-          'thread-attached
-          session
-          :thread-id thread-id
-          :action "Started"))
-       (codex-ide-log-message
-        session
-        "Thread started: %s"
-        (codex-ide-session-thread-id session))
-       (codex-ide--set-session-status session "idle" 'thread-started)
-       (codex-ide--update-header-line session))
-      ("thread/status/changed"
-       (let* ((thread (alist-get 'thread params))
-              (status (or (alist-get 'status params)
-                          (alist-get 'status thread)))
-              (normalized-status (codex-ide--normalize-session-status status)))
-         (when normalized-status
-           (codex-ide--set-session-status
-            session
-            (codex-ide--status-preserving-pending-approvals
-             session
-             normalized-status)
-            'thread-status-changed)
-           (codex-ide--sync-pending-output-indicator-for-status
-            session
-            (codex-ide-session-status session))))
-       (codex-ide-log-message
-        session
-        "Thread status changed to %s"
-        (codex-ide-session-status session))
-       (codex-ide--update-header-line session))
-      ("thread/tokenUsage/updated"
-       (let ((token-usage (alist-get 'tokenUsage params)))
-         (codex-ide--session-metadata-put session :token-usage token-usage)
+	("thread/started"
+	 (codex-ide--remember-reasoning-effort session params)
+	 (codex-ide--remember-model-name session params)
+	 (when-let* ((thread-id (alist-get 'id (alist-get 'thread params))))
+	   (setf (codex-ide-session-thread-id session) thread-id)
+	   (codex-ide--mark-session-thread-attached session)
+	   (codex-ide--run-session-event
+	    'thread-attached
+	    session
+	    :thread-id thread-id
+	    :action "Started"))
 	 (codex-ide-log-message
 	  session
-	  "Token usage updated: total=%s window=%s"
-	  (alist-get 'totalTokens (alist-get 'total token-usage))
-	  (alist-get 'modelContextWindow token-usage))
-	 (codex-ide--update-header-line session)
-	 (codex-ide--schedule-live-usage-refresh session)
-         (codex-ide-usage-note-updated session 'context)))
-      ("account/rateLimits/updated"
-       (let ((rate-limits (alist-get 'rateLimits params)))
-	 (codex-ide--session-metadata-put session :rate-limits rate-limits)
+	  "Thread started: %s"
+	  (codex-ide-session-thread-id session))
+	 (codex-ide--set-session-status session "idle" 'thread-started)
+	 (codex-ide--update-header-line session))
+	("thread/settings/updated"
+	 (codex-ide--remember-reasoning-effort session params)
+	 (codex-ide--remember-model-name session params)
 	 (codex-ide-log-message
 	  session
-	  "Rate limits updated: used=%s%% plan=%s"
-	  (alist-get 'usedPercent (alist-get 'primary rate-limits))
-	  (or (alist-get 'planType rate-limits) "unknown"))
-	 (codex-ide--update-header-line session)
-	 (codex-ide--schedule-live-usage-refresh session)
-         (codex-ide-usage-note-updated session 'quota)))
-      ("turn/started"
-       (codex-ide--remember-reasoning-effort session params)
-       (codex-ide--remember-or-request-model-name session params)
-       (let ((turn-id (or (alist-get 'id (alist-get 'turn params))
-                          (alist-get 'turnId params))))
-         (setf (codex-ide-session-current-turn-id session) turn-id
-               (codex-ide-session-current-message-item-id session) nil
-               (codex-ide-session-current-message-prefix-inserted session) nil
-               (codex-ide-session-current-message-start-marker session) nil
-               (codex-ide-session-item-states session) (make-hash-table :test 'equal))
-         (codex-ide--record-pending-turn-start session turn-id)
-         (codex-ide--mark-current-turn-diff-started session turn-id)
-         (codex-ide-session-diff-note-session-updated session))
-       (codex-ide--set-session-status session "running" 'turn-started)
-       (codex-ide--session-metadata-put
-        session
-        :approval-file-change-diff-rendered-items
-        nil)
-       (codex-ide-log-message
-        session
-        "Turn started: %s"
-        (codex-ide-session-current-turn-id session))
-       (codex-ide--run-session-event
-        'turn-started
-        session
-        :turn-id (codex-ide-session-current-turn-id session))
-       (codex-ide--update-header-line session)
-       (unless (codex-ide-session-output-prefix-inserted session)
-         (codex-ide--begin-turn-display session)))
-      ("item/started"
-       (when-let* ((item (alist-get 'item params)))
-         (when (codex-ide--remember-or-request-model-name session item)
-           (codex-ide--update-header-line session))
-         (codex-ide-log-message
+	  "Thread settings updated: model=%s effort=%s"
+	  (codex-ide--server-model-name session)
+	  (codex-ide--session-metadata-get session :reasoning-effort))
+	 (codex-ide--update-header-line session))
+	("thread/status/changed"
+	 (let* ((thread (alist-get 'thread params))
+	        (status (or (alist-get 'status params)
+	                    (alist-get 'status thread)))
+	        (normalized-status (codex-ide--normalize-session-status status)))
+           (when normalized-status
+             (codex-ide--set-session-status
+              session
+              (codex-ide--status-preserving-pending-approvals
+               session
+               normalized-status)
+              'thread-status-changed)
+             (codex-ide--sync-pending-output-indicator-for-status
+              session
+              (codex-ide-session-status session))))
+	 (codex-ide-log-message
           session
-          "Item started: %s (%s)"
-          (alist-get 'id item)
-          (alist-get 'type item))
-         (when (equal (alist-get 'type item) "fileChange")
-           (codex-ide--put-current-turn-file-change
-            session
-            (alist-get 'id item)
-            item)
+          "Thread status changed to %s"
+          (codex-ide-session-status session))
+	 (codex-ide--update-header-line session))
+	("thread/tokenUsage/updated"
+	 (let ((token-usage (alist-get 'tokenUsage params)))
+           (codex-ide--session-metadata-put session :token-usage token-usage)
+	   (codex-ide-log-message
+	    session
+	    "Token usage updated: total=%s window=%s"
+	    (alist-get 'totalTokens (alist-get 'total token-usage))
+	    (alist-get 'modelContextWindow token-usage))
+	   (codex-ide--update-header-line session)
+	   (codex-ide--schedule-live-usage-refresh session)
+           (codex-ide-usage-note-updated session 'context)))
+	("account/rateLimits/updated"
+	 (let ((rate-limits (alist-get 'rateLimits params)))
+	   (codex-ide--session-metadata-put session :rate-limits rate-limits)
+	   (codex-ide-log-message
+	    session
+	    "Rate limits updated: used=%s%% plan=%s"
+	    (alist-get 'usedPercent (alist-get 'primary rate-limits))
+	    (or (alist-get 'planType rate-limits) "unknown"))
+	   (codex-ide--update-header-line session)
+	   (codex-ide--schedule-live-usage-refresh session)
+           (codex-ide-usage-note-updated session 'quota)))
+	("turn/started"
+	 (codex-ide--remember-reasoning-effort session params)
+	 (codex-ide--remember-or-request-model-name session params)
+	 (let ((turn-id (or (alist-get 'id (alist-get 'turn params))
+                            (alist-get 'turnId params))))
+           (setf (codex-ide-session-current-turn-id session) turn-id
+		 (codex-ide-session-current-message-item-id session) nil
+		 (codex-ide-session-current-message-prefix-inserted session) nil
+		 (codex-ide-session-current-message-start-marker session) nil
+		 (codex-ide-session-item-states session) (make-hash-table :test 'equal))
+           (codex-ide--record-pending-turn-start session turn-id)
+           (codex-ide--mark-current-turn-diff-started session turn-id)
            (codex-ide-session-diff-note-session-updated session))
-         (codex-ide--render-item-start session item)))
-      ("item/agentMessage/delta"
-       (let ((item-id (alist-get 'itemId params))
-             (delta (or (alist-get 'delta params) "")))
-         (let ((codex-ide--current-agent-item-type "agentMessage"))
-           (when (and codex-ide-log-stream-deltas
-                      (not (string-empty-p delta)))
+	 (codex-ide--set-session-status session "running" 'turn-started)
+	 (codex-ide--session-metadata-put
+          session
+          :approval-file-change-diff-rendered-items
+          nil)
+	 (codex-ide-log-message
+          session
+          "Turn started: %s"
+          (codex-ide-session-current-turn-id session))
+	 (codex-ide--run-session-event
+          'turn-started
+          session
+          :turn-id (codex-ide-session-current-turn-id session))
+	 (codex-ide--update-header-line session)
+	 (unless (codex-ide-session-output-prefix-inserted session)
+           (codex-ide--begin-turn-display session)))
+	("item/started"
+	 (when-let* ((item (alist-get 'item params)))
+           (when (codex-ide--remember-or-request-model-name session item)
+             (codex-ide--update-header-line session))
+           (codex-ide-log-message
+            session
+            "Item started: %s (%s)"
+            (alist-get 'id item)
+            (alist-get 'type item))
+           (when (equal (alist-get 'type item) "fileChange")
+             (codex-ide--put-current-turn-file-change
+              session
+              (alist-get 'id item)
+              item)
+             (codex-ide-session-diff-note-session-updated session))
+           (codex-ide--render-item-start session item)))
+	("item/agentMessage/delta"
+	 (let ((item-id (alist-get 'itemId params))
+               (delta (or (alist-get 'delta params) "")))
+           (let ((codex-ide--current-agent-item-type "agentMessage"))
+             (when (and codex-ide-log-stream-deltas
+			(not (string-empty-p delta)))
+               (codex-ide-log-message
+		session
+		"Agent delta for item %s (%d chars)"
+		item-id
+		(length delta)))
+             (codex-ide--ensure-agent-message-prefix session item-id)
+             (codex-ide--append-agent-text buffer delta)
+             (when codex-ide-renderer-render-markdown-during-streaming
+               (codex-ide--render-current-agent-message-markdown-streaming
+		session
+		item-id)))))
+	("item/commandExecution/outputDelta"
+	 (let ((item-id (alist-get 'itemId params))
+               (delta (or (alist-get 'delta params) "")))
+           (when codex-ide-log-stream-deltas
              (codex-ide-log-message
               session
-              "Agent delta for item %s (%d chars)"
+              "Command output delta for item %s (%d chars)"
               item-id
               (length delta)))
-           (codex-ide--ensure-agent-message-prefix session item-id)
-           (codex-ide--append-agent-text buffer delta)
-           (when codex-ide-renderer-render-markdown-during-streaming
-             (codex-ide--render-current-agent-message-markdown-streaming
+           (unless (string-empty-p delta)
+             (let ((state (codex-ide--store-command-output-delta
+                           session
+                           item-id
+                           delta)))
+               (if (or (plist-get state :summary)
+                       (plist-get state :command-output-overlay))
+                   (codex-ide--render-command-output-state session item-id)
+		 (codex-ide--put-item-state
+                  session
+                  item-id
+                  (plist-put
+                   state
+                   :pending-output-p
+                   t)))))))
+	("item/fileChange/outputDelta"
+	 (let ((item-id (alist-get 'itemId params))
+               (delta (or (alist-get 'delta params) "")))
+           (when codex-ide-log-stream-deltas
+             (codex-ide-log-message
               session
-              item-id)))))
-      ("item/commandExecution/outputDelta"
-       (let ((item-id (alist-get 'itemId params))
-             (delta (or (alist-get 'delta params) "")))
-         (when codex-ide-log-stream-deltas
+              "File-change delta for item %s (%d chars)"
+              item-id
+              (length delta)))
+           (when-let* ((state (codex-ide--item-state session item-id)))
+             (codex-ide--put-item-state
+              session
+              item-id
+              (plist-put state :diff-text
+			 (concat (or (plist-get state :diff-text) "") delta))))
+           (unless (string-empty-p delta)
+             (codex-ide--put-current-turn-file-change session item-id nil delta)
+             (codex-ide-session-diff-note-session-updated session))))
+	("item/plan/delta"
+	 (when codex-ide-log-stream-deltas
            (codex-ide-log-message
             session
-            "Command output delta for item %s (%d chars)"
-            item-id
-            (length delta)))
-         (unless (string-empty-p delta)
-           (let ((state (codex-ide--store-command-output-delta
-                         session
-                         item-id
-                         delta)))
-             (if (or (plist-get state :summary)
-                     (plist-get state :command-output-overlay))
-                 (codex-ide--render-command-output-state session item-id)
-               (codex-ide--put-item-state
-                session
-                item-id
-                (plist-put
-                 state
-                 :pending-output-p
-                 t)))))))
-      ("item/fileChange/outputDelta"
-       (let ((item-id (alist-get 'itemId params))
-             (delta (or (alist-get 'delta params) "")))
-         (when codex-ide-log-stream-deltas
+            "Plan delta (%d chars)"
+            (length (or (alist-get 'delta params) ""))))
+	 (codex-ide--render-plan-delta session params))
+	("item/reasoning/summaryTextDelta"
+	 (when codex-ide-log-stream-deltas
            (codex-ide-log-message
             session
-            "File-change delta for item %s (%d chars)"
-            item-id
-            (length delta)))
-         (when-let* ((state (codex-ide--item-state session item-id)))
-           (codex-ide--put-item-state
+            "Reasoning summary delta (%d chars)"
+            (length (or (alist-get 'delta params)
+			(alist-get 'text params)
+			""))))
+	 (codex-ide--render-reasoning-delta session params))
+	("item/completed"
+	 (when-let* ((item (alist-get 'item params)))
+           (when (codex-ide--remember-or-request-model-name session item)
+             (codex-ide--update-header-line session))
+           (codex-ide-log-message
             session
-            item-id
-            (plist-put state :diff-text
-                       (concat (or (plist-get state :diff-text) "") delta))))
-         (unless (string-empty-p delta)
-           (codex-ide--put-current-turn-file-change session item-id nil delta)
-           (codex-ide-session-diff-note-session-updated session))))
-      ("item/plan/delta"
-       (when codex-ide-log-stream-deltas
-         (codex-ide-log-message
-          session
-          "Plan delta (%d chars)"
-          (length (or (alist-get 'delta params) ""))))
-       (codex-ide--render-plan-delta session params))
-      ("item/reasoning/summaryTextDelta"
-       (when codex-ide-log-stream-deltas
-         (codex-ide-log-message
-          session
-          "Reasoning summary delta (%d chars)"
-          (length (or (alist-get 'delta params)
-                      (alist-get 'text params)
-                      ""))))
-       (codex-ide--render-reasoning-delta session params))
-      ("item/completed"
-       (when-let* ((item (alist-get 'item params)))
-         (when (codex-ide--remember-or-request-model-name session item)
-           (codex-ide--update-header-line session))
-         (codex-ide-log-message
-          session
-          "Item completed: %s (%s, status=%s)"
-          (alist-get 'id item)
-          (alist-get 'type item)
-          (alist-get 'status item))
-         (when (equal (alist-get 'type item) "fileChange")
-           (codex-ide--put-current-turn-file-change
-            session
+            "Item completed: %s (%s, status=%s)"
             (alist-get 'id item)
-            item)
-           (codex-ide-session-diff-note-session-updated session))
-         (codex-ide--render-item-completion session item)))
-      ("turn/completed"
-       (let ((interrupted (codex-ide-session-interrupt-requested session))
-             (turn-id (codex-ide-session-current-turn-id session)))
-         (codex-ide-log-message
-          session
-          "Turn completed: %s"
-          turn-id)
-         (if turn-id
-             (progn
-               (codex-ide--mark-current-turn-diff-completed session)
-               (codex-ide-session-diff-note-session-updated session)
-               (when interrupted
-                 (codex-ide-log-message session "Turn completed after interrupt request"))
-               (codex-ide--finish-turn
-                session
-                (when interrupted "[Agent interrupted]"))
-               (codex-ide--maybe-submit-queued-prompt session))
+            (alist-get 'type item)
+            (alist-get 'status item))
+           (when (equal (alist-get 'type item) "fileChange")
+             (codex-ide--put-current-turn-file-change
+              session
+              (alist-get 'id item)
+              item)
+             (codex-ide-session-diff-note-session-updated session))
+           (codex-ide--render-item-completion session item)))
+	("turn/completed"
+	 (let ((interrupted (codex-ide-session-interrupt-requested session))
+               (turn-id (codex-ide-session-current-turn-id session)))
            (codex-ide-log-message
             session
-            "Ignoring duplicate turn/completed notification for an already-closed turn"))))
-      ("error"
-       (let* ((codex-ide--current-agent-item-type "error")
-              (info (codex-ide--notification-error-info params))
-              (message (codex-ide--notification-error-message info))
-              (details (codex-ide--notification-error-additional-details info))
-              (detail (codex-ide--notification-error-display-detail info))
-              (classification
-               (codex-ide--classify-session-error
-                detail
-                (alist-get 'http-status info))))
-         (codex-ide-log-message session "Error notification: %S" params)
-         (if (alist-get 'will-retry info)
-             (codex-ide--handle-retryable-notification-error session info)
-           (progn
-             (codex-ide--render-session-error
+            "Turn completed: %s"
+            turn-id)
+           (if turn-id
+               (progn
+		 (codex-ide--mark-current-turn-diff-completed session)
+		 (codex-ide-session-diff-note-session-updated session)
+		 (when interrupted
+                   (codex-ide-log-message session "Turn completed after interrupt request"))
+		 (codex-ide--finish-turn
+                  session
+                  (when interrupted "[Agent interrupted]"))
+		 (codex-ide--maybe-submit-queued-prompt session))
+             (codex-ide-log-message
               session
-              (list message (alist-get 'http-status info))
-              "Codex notification")
-             (codex-ide--append-notification-additional-details session details)
-             (codex-ide--recover-from-session-error session classification)))))
-      ((or "notifications/elicitation/complete"
-           "mcpServer/elicitation/complete")
-       (codex-ide-log-message
-        session
-        "Elicitation completed: %s"
-        (alist-get 'elicitationId params))
-       (codex-ide--append-to-buffer
-        buffer
-        (format "\n[%s]\n"
-                (codex-ide-mcp-elicitation-format-completion params))
-        'shadow))
+              "Ignoring duplicate turn/completed notification for an already-closed turn"))))
+	("error"
+	 (let* ((codex-ide--current-agent-item-type "error")
+		(info (codex-ide--notification-error-info params))
+		(message (codex-ide--notification-error-message info))
+		(details (codex-ide--notification-error-additional-details info))
+		(detail (codex-ide--notification-error-display-detail info))
+		(classification
+		 (codex-ide--classify-session-error
+                  detail
+                  (alist-get 'http-status info))))
+           (codex-ide-log-message session "Error notification: %S" params)
+           (if (alist-get 'will-retry info)
+               (codex-ide--handle-retryable-notification-error session info)
+             (progn
+               (codex-ide--render-session-error
+		session
+		(list message (alist-get 'http-status info))
+		"Codex notification")
+               (codex-ide--append-notification-additional-details session details)
+               (codex-ide--recover-from-session-error session classification)))))
+	((or "notifications/elicitation/complete"
+             "mcpServer/elicitation/complete")
+	 (codex-ide-log-message
+          session
+          "Elicitation completed: %s"
+          (alist-get 'elicitationId params))
+	 (codex-ide--append-to-buffer
+          buffer
+          (format "\n[%s]\n"
+                  (codex-ide-mcp-elicitation-format-completion params))
+          'shadow))
         (_ nil)))))
 
 (defun codex-ide--queued-prompts (session)

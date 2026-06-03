@@ -241,7 +241,8 @@ When KILL-LOG-BUFFER is non-nil, also kill SESSION's log buffer."
   "Prepare BUFFER as SESSION's transcript buffer for WORKING-DIR."
   (with-current-buffer buffer
     (codex-ide-session-mode)
-    (setq-local default-directory working-dir)
+    (setq-local default-directory (file-name-as-directory working-dir))
+    (hack-dir-local-variables-non-file-buffer)
     (setq-local codex-ide--session session)
     (add-hook 'kill-buffer-hook #'codex-ide--handle-session-buffer-killed nil t)
     (let ((inhibit-read-only t))

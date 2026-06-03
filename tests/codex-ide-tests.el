@@ -4138,6 +4138,26 @@
 					  (codex-ide--submit-prompt)))
 				      (should (equal (alist-get 'effort submitted) "high")))))))
 
+  (ert-deftest codex-ide-thread-start-and-resume-include-session-aware-reasoning-effort ()
+    (let ((project-dir (codex-ide-test--make-temp-project))
+          (codex-ide-reasoning-effort "medium"))
+      (codex-ide-test-with-fixture project-dir
+				   (codex-ide-test-with-fake-processes
+				    (let ((session (codex-ide--create-process-session)))
+				      (codex-ide-config-set-session-value
+				       'reasoning-effort
+				       "high"
+				       session)
+				      (should (equal (alist-get 'effort
+								(codex-ide--thread-start-params
+								 session))
+						     "high"))
+				      (should (equal (alist-get 'effort
+								(codex-ide--thread-resume-params
+								 "thread-1"
+								 session))
+						     "high")))))))
+
   (ert-deftest codex-ide-submit-includes-model-when-configured ()
     (let ((project-dir (codex-ide-test--make-temp-project))
           (submitted nil)
@@ -4340,6 +4360,51 @@
 				      (with-current-buffer (codex-ide-session-buffer session)
 					(codex-ide--update-header-line session)
 					(should (string-match-p "Model: gpt-5\\.4 (high)"
+								(format-mode-line header-line-format)))))))))
+
+  (ert-deftest codex-ide-header-line-uses-session-aware-reasoning-effort-fallback ()
+    (let ((project-dir (codex-ide-test--make-temp-project))
+          (codex-ide-reasoning-effort "medium"))
+      (codex-ide-test-with-fixture project-dir
+				   (codex-ide-test-with-fake-processes
+				    (let ((session (codex-ide--create-process-session)))
+				      (codex-ide--session-metadata-put session :model-name "gpt-5.4")
+				      (codex-ide--session-metadata-put session :reasoning-effort "xhigh")
+				      (codex-ide-config-set-session-value
+				       'reasoning-effort
+				       "high"
+				       session)
+				      (with-current-buffer (codex-ide-session-buffer session)
+					(codex-ide--update-header-line session)
+					(should (string-match-p "Model: gpt-5\\.4 (high)"
+								(format-mode-line header-line-format)))
+					(should-not (string-match-p "Model: gpt-5\\.4 (xhigh)"
+								    (format-mode-line header-line-format)))))))))
+
+  (ert-deftest codex-ide-thread-settings-updated-remembers-model-and-reasoning-effort ()
+    (let ((project-dir (codex-ide-test--make-temp-project)))
+      (codex-ide-test-with-fixture project-dir
+				   (codex-ide-test-with-fake-processes
+				    (let ((session (codex-ide--create-process-session)))
+				      (setf (codex-ide-session-thread-id session) "thread-settings")
+				      (codex-ide--session-metadata-put session :model-name "gpt-5.4")
+				      (codex-ide--session-metadata-put session :reasoning-effort "xhigh")
+				      (codex-ide--handle-notification
+				       session
+				       '((method . "thread/settings/updated")
+					 (params
+					  . ((threadId . "thread-settings")
+					     (threadSettings
+					      . ((model . "gpt-5.4-mini")
+						 (effort . "medium")))))))
+				      (should (equal (codex-ide--server-model-name session)
+						     "gpt-5.4-mini"))
+				      (should (equal (codex-ide--session-metadata-get
+						      session
+						      :reasoning-effort)
+						     "medium"))
+				      (with-current-buffer (codex-ide-session-buffer session)
+					(should (string-match-p "Model: gpt-5\\.4-mini (medium)"
 								(format-mode-line header-line-format)))))))))
 
   (ert-deftest codex-ide-header-line-prefers-session-model-over-global-default ()

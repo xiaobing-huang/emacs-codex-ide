@@ -17,7 +17,7 @@
 (require 'codex-ide-protocol)
 (require 'codex-ide-renderer)
 
-(defvar codex-ide-reasoning-effort)
+(declare-function codex-ide-config-effective-value "codex-ide-config" (key &optional session))
 
 (defcustom codex-ide-live-usage-refresh-delay 0.1
   "Seconds to coalesce visible usage refreshes during streaming turns."
@@ -98,8 +98,10 @@
   (let ((model (and session
                     (codex-ide--server-model-name session)))
         (effort (and session
-                     (or (codex-ide--session-metadata-get session :reasoning-effort)
-                         codex-ide-reasoning-effort))))
+                     (or (codex-ide-config-effective-value
+                          'reasoning-effort
+                          session)
+                         (codex-ide--session-metadata-get session :reasoning-effort)))))
     (unless model
       (codex-ide--ensure-server-model-name session))
     (when model

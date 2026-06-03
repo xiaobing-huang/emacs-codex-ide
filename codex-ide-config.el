@@ -172,11 +172,20 @@
         (setq overrides (cddr overrides))))
     found))
 
+(defun codex-ide-config--default-value (key &optional session)
+  "Return the default value for config KEY, using SESSION's buffer if available."
+  (let ((variable (codex-ide-config--global-var key))
+        (buffer (and session (codex-ide-session-buffer session))))
+    (if (buffer-live-p buffer)
+        (with-current-buffer buffer
+          (symbol-value variable))
+      (symbol-value variable))))
+
 (defun codex-ide-config-effective-value (key &optional session)
   "Return the effective value for config KEY in SESSION."
   (if (codex-ide-config--session-value-bound-p key session)
       (codex-ide-config-session-value key session)
-    (symbol-value (codex-ide-config--global-var key))))
+    (codex-ide-config--default-value key session)))
 
 (defun codex-ide-config-set-session-value (key value &optional session)
   "Set SESSION's override for config KEY to VALUE."

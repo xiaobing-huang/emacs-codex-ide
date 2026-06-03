@@ -152,7 +152,11 @@
             (sandbox . ,(codex-ide-config-effective-value 'sandbox-mode session))
             (personality . ,(codex-ide-config-effective-value 'personality session))
             ,@(when-let* ((model (codex-ide-config-effective-value 'model session)))
-                `((model . ,model)))))))
+                `((model . ,model)))
+            ,@(when-let* ((effort (codex-ide-config-effective-value
+                                   'reasoning-effort
+                                   session)))
+                `((effort . ,effort)))))))
 
 (defun codex-ide--turn-start-sandbox-policy (&optional session)
   "Build a `sandboxPolicy` object for `turn/start` from SESSION settings."
@@ -182,7 +186,11 @@
             (sandbox . ,(codex-ide-config-effective-value 'sandbox-mode session))
             (personality . ,(codex-ide-config-effective-value 'personality session))
             ,@(when-let* ((model (codex-ide-config-effective-value 'model session)))
-                `((model . ,model)))))))
+                `((model . ,model)))
+            ,@(when-let* ((effort (codex-ide-config-effective-value
+                                   'reasoning-effort
+                                   session)))
+                `((effort . ,effort)))))))
 
 (defun codex-ide--thread-read-params (thread-id &optional include-turns)
   "Build `thread/read` params for THREAD-ID."
@@ -210,9 +218,13 @@
 
 (defun codex-ide--extract-reasoning-effort (payload)
   "Extract a reasoning effort string from PAYLOAD, if present."
-  (or (alist-get 'reasoningEffort payload)
-      (alist-get 'reasoningEffort (alist-get 'thread payload))
-      (alist-get 'reasoningEffort (alist-get 'turn payload))))
+  (let ((thread-settings (and (listp payload)
+                              (alist-get 'threadSettings payload))))
+    (or (alist-get 'reasoningEffort payload)
+        (alist-get 'reasoningEffort (alist-get 'thread payload))
+        (alist-get 'reasoningEffort (alist-get 'turn payload))
+        (and (listp thread-settings)
+             (alist-get 'effort thread-settings)))))
 
 (defun codex-ide--remember-reasoning-effort (session payload)
   "Persist reasoning effort from PAYLOAD into SESSION metadata."
@@ -225,6 +237,7 @@
          (turn (and (listp payload) (alist-get 'turn payload)))
          (item (and (listp payload) (alist-get 'item payload)))
          (result (and (listp payload) (alist-get 'result payload)))
+         (thread-settings (and (listp payload) (alist-get 'threadSettings payload)))
          (root (or (and (listp payload)
                         (or (alist-get 'config payload)
                             (alist-get 'effectiveConfig payload)))
@@ -246,6 +259,8 @@
            (and (listp item) (alist-get 'modelName item))
            (and (listp result) (alist-get 'model result))
            (and (listp result) (alist-get 'modelName result))
+           (and (listp thread-settings) (alist-get 'model thread-settings))
+           (and (listp thread-settings) (alist-get 'modelName thread-settings))
            (and (listp root) (codex-ide--alist-get-safe 'model root))
            (and (listp settings) (codex-ide--alist-get-safe 'model settings))))))
 

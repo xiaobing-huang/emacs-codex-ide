@@ -29,6 +29,30 @@
 				    (should (equal (codex-ide-config-effective-value 'sandbox-mode session)
 						   "workspace-write")))))))
 
+(ert-deftest codex-ide-config-effective-value-uses-session-buffer-dir-locals ()
+  (let ((project-dir (codex-ide-test--make-temp-project))
+        (class (gensym "codex-ide-test-dir-locals")))
+    (dir-locals-set-class-variables
+     class
+     '((nil . ((codex-ide-model . "gpt-5.4-mini")
+               (codex-ide-reasoning-effort . "medium")))))
+    (setq project-dir (file-name-as-directory (file-truename project-dir)))
+    (dir-locals-set-directory-class project-dir class)
+    (should (eq (cadr (dir-locals-find-file project-dir))
+                class))
+    (codex-ide-test-with-fixture project-dir
+				 (codex-ide-test-with-fake-processes
+				  (let ((session (codex-ide--create-process-session)))
+				    (with-current-buffer (codex-ide-session-buffer session)
+				      (should (local-variable-p 'codex-ide-model))
+				      (should (local-variable-p 'codex-ide-reasoning-effort)))
+				    (should (equal (codex-ide-config-effective-value 'model session)
+						   "gpt-5.4-mini"))
+				    (should (equal (codex-ide-config-effective-value
+                                                    'reasoning-effort
+                                                    session)
+						   "medium")))))))
+
 (ert-deftest codex-ide-config-apply-to-session-keeps-global-defaults ()
   (let ((project-dir (codex-ide-test--make-temp-project))
         (codex-ide-model "gpt-5.4")
