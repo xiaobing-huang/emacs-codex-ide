@@ -42,6 +42,7 @@
 
 (defvar codex-ide-request-timeout)
 (defvar codex-ide-model)
+(defvar codex-ide-fast)
 (defvar codex-ide-approval-policy)
 (defvar codex-ide-sandbox-mode)
 (defvar codex-ide-personality)
@@ -153,10 +154,11 @@
             (personality . ,(codex-ide-config-effective-value 'personality session))
             ,@(when-let* ((model (codex-ide-config-effective-value 'model session)))
                 `((model . ,model)))
-            ,@(when-let* ((effort (codex-ide-config-effective-value
-                                   'reasoning-effort
-                                   session)))
-                `((effort . ,effort)))))))
+            ,@(when-let* ((service-tier
+                           (codex-ide--fast-service-tier session)))
+                `((serviceTier . ,service-tier)))
+            (effort . ,(codex-ide-config-effective-reasoning-effort
+                        session))))))
 
 (defun codex-ide--turn-start-sandbox-policy (&optional session)
   "Build a `sandboxPolicy` object for `turn/start` from SESSION settings."
@@ -187,10 +189,11 @@
             (personality . ,(codex-ide-config-effective-value 'personality session))
             ,@(when-let* ((model (codex-ide-config-effective-value 'model session)))
                 `((model . ,model)))
-            ,@(when-let* ((effort (codex-ide-config-effective-value
-                                   'reasoning-effort
-                                   session)))
-                `((effort . ,effort)))))))
+            ,@(when-let* ((service-tier
+                           (codex-ide--fast-service-tier session)))
+                `((serviceTier . ,service-tier)))
+            (effort . ,(codex-ide-config-effective-reasoning-effort
+                        session))))))
 
 (defun codex-ide--thread-read-params (thread-id &optional include-turns)
   "Build `thread/read` params for THREAD-ID."
@@ -488,8 +491,13 @@ SORT-KEY is nil, sort by `updated_at'."
                  (mapcar (lambda (model)
                            (or (alist-get 'model model)
                                (alist-get 'id model)))
-                         models)))))
+                        models)))))
     (error nil)))
+
+(defun codex-ide--fast-service-tier (&optional session)
+  "Return the app-server service tier implied by SESSION's Fast setting."
+  (when (equal (codex-ide-config-effective-value 'fast session) "on")
+    "priority"))
 
 (defun codex-ide--handle-response (&optional session message)
   "Handle a JSON-RPC response MESSAGE for SESSION."

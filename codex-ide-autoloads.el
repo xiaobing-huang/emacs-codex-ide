@@ -24,9 +24,17 @@
 (defvar codex-ide-model nil
 "Optional model name for new or resumed threads and later turns.")
 (custom-autoload 'codex-ide-model "codex-ide" t)
-(defvar codex-ide-reasoning-effort nil
-"Optional reasoning effort for new Codex turns.")
+(put 'codex-ide-model 'safe-local-variable (lambda (value) (or (null value) (stringp value))))
+(defvar codex-ide-fast "off"
+"Whether to request Codex Fast mode.
+When set to \"on\", Codex IDE sends app-server `serviceTier' as \"priority\".
+When set to \"off\", Codex IDE leaves `serviceTier' unset.")
+(custom-autoload 'codex-ide-fast "codex-ide" t)
+(put 'codex-ide-fast 'safe-local-variable (lambda (value) (member value '("off" "on"))))
+(defvar codex-ide-reasoning-effort "medium"
+"Reasoning effort sent for new or resumed threads and later turns.")
 (custom-autoload 'codex-ide-reasoning-effort "codex-ide" t)
+(put 'codex-ide-reasoning-effort 'safe-local-variable (lambda (value) (member value '("none" "minimal" "low" "medium" "high" "xhigh"))))
 (defvar codex-ide-running-submit-action 'steer
 "Action used by `codex-ide-submit' while a Codex turn is running.")
 (custom-autoload 'codex-ide-running-submit-action "codex-ide" t)
@@ -49,6 +57,13 @@ status has no entry here, `codex-ide-steering-placeholder-text' is used.")
 (defvar codex-ide-session-baseline-prompt "\n- You are a Codex server running inside Emacs.\n- You can use MCP tools to inspect and interact with the running Emacs session.\n- Interpret Emacs terminology as relevant context to the user's request: buffers, regions, windows, point, mark, current file, etc.\n- Responses are rendered as Markdown in an Emacs buffer.\n- Markdown pipe tables are rendered as visible tables.\n- In table cells, wrap code-like identifiers, filenames, paths, symbols, and expressions in backticks.\n- Use markdown links for code references, for example [`foo.el`](/tmp/foo.el#L3C2).\n- Avoid bare underscores or asterisks for code-like text inside tables; use backticks instead.\n- Do not needlessly use Emacs commands to accomplish agent tasks."
 "Optional baseline prompt injected into the first real prompt of a new thread.")
 (custom-autoload 'codex-ide-session-baseline-prompt "codex-ide" t)
+(defvar codex-ide-emacs-context-policy 'all
+"Which Emacs context blocks to include in submitted prompts.
+
+The session context block contains `codex-ide-session-baseline-prompt' and is
+sent at most once per thread.  The prompt context block contains the focused
+Emacs buffer, point, and active selection for each prompt.")
+(custom-autoload 'codex-ide-emacs-context-policy "codex-ide" t)
 (defvar codex-ide-buffer-name-prefix "codex"
 "Prefix used when creating Codex session buffer names.")
 (custom-autoload 'codex-ide-buffer-name-prefix "codex-ide" t)
@@ -183,10 +198,12 @@ This is used to bypass bridge-originated elicitation prompts when
 
 ;;; Generated autoloads from codex-ide-transient.el
 
+(autoload 'codex-ide-apply-config-preset "codex-ide-transient"
+"Prompt for and apply a named Codex config preset." t)
 (autoload 'codex-ide-menu "codex-ide-transient" nil t)
-(autoload 'codex-ide-config-menu "codex-ide-transient" nil t)
+(autoload 'codex-ide-agent-config-menu "codex-ide-transient" nil t)
 (autoload 'codex-ide-debug-menu "codex-ide-transient" nil t)
-(register-definition-prefixes "codex-ide-transient" '("codex-ide--"))
+(register-definition-prefixes "codex-ide-transient" '("codex-ide-"))
 
 
 ;;; Generated autoloads from codex-ide-mcp-elicitation.el
@@ -438,17 +455,19 @@ while 1 would fully replace the background with the foreground color.")
 ;;; Generated autoloads from codex-ide-session-mode.el
 
 (autoload 'codex-ide-session-mode-nav-forward "codex-ide-session-mode"
-  "Move point to the next focal point in a Codex session buffer." t)
+"Move point to the next focal point in a Codex session buffer." t)
 (autoload 'codex-ide-session-mode-nav-backward "codex-ide-session-mode"
-  "Move point to the previous focal point in a Codex session buffer." t)
+"Move point to the previous focal point in a Codex session buffer." t)
 (autoload 'codex-ide-session-mode "codex-ide-session-mode"
-  "Major mode for Codex app-server session buffers.
+"Major mode for Codex app-server session buffers.
 
 * \\<codex-ide-session-mode-map>\\[codex-ide-submit] submits the active prompt.
 
 * \\[codex-ide-interrupt] interrupts the current turn.
 
 * \\[codex-ide-session-diff-open] opens the session diff buffer.
+
+* \\[codex-ide-apply-config-preset] prompts for and applies a config preset.
 
 * \\[codex-ide-previous-prompt-line] and \\[codex-ide-next-prompt-line] move between prompt lines.
 
@@ -521,6 +540,12 @@ otherwise use the most recent completed turn.
 ;;; Generated autoloads from codex-ide-approvals-data.el
 
 (register-definition-prefixes "codex-ide-approvals-data" '("codex-ide-approvals-data-"))
+
+
+;;; Generated autoloads from codex-ide-header.el
+
+(register-definition-prefixes "codex-ide-header" '("codex-ide-"))
+
 
 ;;; End of scraped data
 

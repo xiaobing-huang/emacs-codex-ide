@@ -35,6 +35,8 @@
   "codex-ide-diff-view" nil nil)
 (autoload 'codex-ide-session-diff-open
   "codex-ide-diff-view" nil t)
+(autoload 'codex-ide-apply-config-preset
+  "codex-ide-transient" nil t)
 
 (defvar codex-ide-session-enable-visual-line-mode)
 
@@ -52,6 +54,7 @@
 (define-key codex-ide-session-mode-map (kbd "C-c RET") #'codex-ide-submit)
 (define-key codex-ide-session-mode-map (kbd "C-c C-d") #'codex-ide-session-diff-open)
 (define-key codex-ide-session-mode-map (kbd "C-c C-k") #'codex-ide-interrupt)
+(define-key codex-ide-session-mode-map (kbd "C-c C-p") #'codex-ide-apply-config-preset)
 (define-key codex-ide-session-mode-map (kbd "C-M-p") #'codex-ide-previous-prompt-line)
 (define-key codex-ide-session-mode-map (kbd "C-M-n") #'codex-ide-next-prompt-line)
 (define-key codex-ide-session-mode-map (kbd "TAB") #'codex-ide-session-mode-nav-forward)
@@ -354,6 +357,8 @@ so users can navigate within those controls without opting out of follow mode."
 * \\[codex-ide-interrupt] interrupts the current turn.
 
 * \\[codex-ide-session-diff-open] opens the session diff buffer.
+
+* \\[codex-ide-apply-config-preset] prompts for and applies a config preset.
 
 * \\[codex-ide-previous-prompt-line] and \\[codex-ide-next-prompt-line] move between prompt lines.
 

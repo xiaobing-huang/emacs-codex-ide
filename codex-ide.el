@@ -70,18 +70,27 @@
   :group 'codex-ide)
 
 ;;;###autoload
-(defcustom codex-ide-reasoning-effort nil
-  "Optional reasoning effort for new Codex turns."
-  :type '(choice (const :tag "Default" nil)
-                 (const "none")
+(defcustom codex-ide-fast "off"
+  "Whether to request Codex Fast mode.
+When set to \"on\", Codex IDE sends app-server `serviceTier' as \"priority\".
+When set to \"off\", Codex IDE leaves `serviceTier' unset."
+  :type '(choice (const :tag "Off" "off")
+                 (const :tag "On" "on"))
+  :safe (lambda (value)
+          (member value '("off" "on")))
+  :group 'codex-ide)
+
+;;;###autoload
+(defcustom codex-ide-reasoning-effort "medium"
+  "Reasoning effort sent for new or resumed threads and later turns."
+  :type '(choice (const "none")
                  (const "minimal")
                  (const "low")
                  (const "medium")
                  (const "high")
                  (const "xhigh"))
   :safe (lambda (value)
-          (or (null value)
-              (member value '("none" "minimal" "low" "medium" "high" "xhigh"))))
+          (member value '("none" "minimal" "low" "medium" "high" "xhigh")))
   :group 'codex-ide)
 
 ;;;###autoload

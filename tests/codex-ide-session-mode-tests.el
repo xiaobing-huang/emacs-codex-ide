@@ -26,6 +26,7 @@
     (dolist (binding '("* \\<codex-ide-session-mode-map>\\[codex-ide-submit]"
                        "* \\[codex-ide-interrupt]"
                        "* \\[codex-ide-session-diff-open]"
+                       "* \\[codex-ide-apply-config-preset]"
                        "* \\[codex-ide-previous-prompt-line]"
                        "* \\[codex-ide-session-mode-nav-forward]"
                        "* \\<codex-ide-session-prompt-minor-mode-map>\\[codex-ide-previous-prompt-history]"))
@@ -36,6 +37,12 @@
     (codex-ide-session-mode)
     (should (eq (key-binding (kbd "C-c C-d"))
                 #'codex-ide-session-diff-open))))
+
+(ert-deftest codex-ide-session-mode-binds-apply-config-preset ()
+  (with-temp-buffer
+    (codex-ide-session-mode)
+    (should (eq (key-binding (kbd "C-c C-p"))
+                #'codex-ide-apply-config-preset))))
 
 (ert-deftest codex-ide-session-mode-imenu-indexes-user-prompts ()
   (with-temp-buffer

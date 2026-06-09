@@ -22,6 +22,7 @@
 (declare-function codex-ide--available-model-names "codex-ide-protocol" ())
 
 (defvar codex-ide-model)
+(defvar codex-ide-fast)
 (defvar codex-ide-reasoning-effort)
 (defvar codex-ide-approval-policy)
 (defvar codex-ide-sandbox-mode)
@@ -35,7 +36,7 @@
 
 (defconst codex-ide-config--completion-extra-properties
   '(:display-sort-function identity
-			   :cycle-sort-function identity)
+                           :cycle-sort-function identity)
   "Completion metadata used to preserve descriptor order in config prompts.")
 
 (defconst codex-ide-config--scope-choices-in-session
@@ -78,20 +79,70 @@
      :global-var codex-ide-model
      :applies-to-live-session t
      :protocol-key model)
+    (fast
+     :label "fast"
+     :prompt "Fast"
+     :choices ("off" "on")
+     :global-var codex-ide-fast
+     :applies-to-live-session t
+     :protocol-key serviceTier)
     (reasoning-effort
      :label "reasoning effort"
      :prompt "Reasoning effort"
      :choices ("none" "minimal" "low" "medium" "high" "xhigh")
-     :allow-empty t
      :global-var codex-ide-reasoning-effort
      :applies-to-live-session t
      :protocol-key effort))
   "Descriptor table for session-aware Codex IDE settings.")
 
+(defvar codex-ide-config-history-limit 30
+  "Maximum number of config snapshots retained in `codex-ide-config-history'.")
+
+(defvar codex-ide-config-history nil
+  "Recent config snapshots available for restore.
+Each entry records the global and session-local state overwritten by one config
+apply operation.")
+
+(defvar codex-ide-config-presets
+  '(("Max" . ( model "gpt-5.5"
+               reasoning-effort "xhigh"
+               fast "on"))
+    ("Medium" . ( model "gpt-5.4"
+                  reasoning-effort "medium"
+                  fast "off"))
+    ("Budget" . ( model "gpt-5.4-mini"
+                  reasoning-effort "low"
+                  fast "off"))
+    ("Read-only" . ( approval-policy "on-request"
+                     sandbox-mode "read-only"))
+    ("Danger".  ( approval-policy "never"
+                  sandbox-mode "danger-full-access")))
+  "Named config presets.
+Each entry is (NAME . PLIST), where PLIST maps config keys to values.  Omitted
+keys are left unchanged when applying the preset.")
+
+(defvar codex-ide-config--history-group nil
+  "Pending grouped history entry for the active config menu interaction.")
+
 (defun codex-ide-config--descriptor (key)
   "Return the descriptor plist for config KEY."
   (or (alist-get key codex-ide-config--descriptors)
       (error "Unknown Codex config key: %S" key)))
+
+(defun codex-ide-config--keys ()
+  "Return all known config keys in descriptor order."
+  (mapcar #'car codex-ide-config--descriptors))
+
+(defun codex-ide-config--plist-member-p (plist key)
+  "Return non-nil when PLIST contains KEY."
+  (let ((found nil))
+    (while plist
+      (when (eq (car plist) key)
+        (setq found t
+              plist nil))
+      (when plist
+        (setq plist (cddr plist))))
+    found))
 
 (defun codex-ide-config--label (key)
   "Return the human-readable label for config KEY."
@@ -146,6 +197,259 @@
    #'codex-ide--query-only-session-p
    (seq-filter #'codex-ide--live-session-p codex-ide--sessions)))
 
+(defun codex-ide-config--global-values ()
+  "Return a plist of current global config values."
+  (let ((values nil))
+    (dolist (key (codex-ide-config--keys))
+      (setq values
+            (plist-put values key
+                       (symbol-value (codex-ide-config--global-var key)))))
+    values))
+
+(defun codex-ide-config--restore-global-values (values)
+  "Restore global config VALUES."
+  (dolist (key (codex-ide-config--keys))
+    (set (codex-ide-config--global-var key)
+         (plist-get values key))))
+
+(defun codex-ide-config--affected-sessions (scope &optional session)
+  "Return live sessions affected by config SCOPE and SESSION."
+  (pcase scope
+    ('this-session
+     (when session
+       (list session)))
+    ('all-sessions
+     (codex-ide-config--live-sessions))
+    (_ nil)))
+
+(defun codex-ide-config--snapshot-session (session)
+  "Return restorable config state for SESSION."
+  (list :session session
+        :overrides (copy-sequence
+                    (or (codex-ide-config--session-overrides session)
+                        '()))))
+
+(defun codex-ide-config--snapshot (scope &optional session)
+  "Return restorable config state for SCOPE and SESSION."
+  (list :scope scope
+        :time (current-time)
+        :restore-globals (memq scope '(all-sessions future-sessions))
+        :globals (codex-ide-config--global-values)
+        :sessions (mapcar #'codex-ide-config--snapshot-session
+                          (codex-ide-config--affected-sessions scope session))))
+
+(defun codex-ide-config--snapshot-state (snapshot)
+  "Return the comparable restorable state in SNAPSHOT."
+  (list :restore-globals (plist-get snapshot :restore-globals)
+        :globals (plist-get snapshot :globals)
+        :sessions (mapcar (lambda (entry)
+                            (list :session (plist-get entry :session)
+                                  :overrides (plist-get entry :overrides)))
+                          (plist-get snapshot :sessions))))
+
+(defun codex-ide-config--history-group-snapshot-scope (&optional session)
+  "Return the broad snapshot scope for a grouped menu interaction."
+  (if (or session (codex-ide-config--live-sessions))
+      'all-sessions
+    'future-sessions))
+
+(defun codex-ide-config--history-group-snapshot (group)
+  "Return a fresh snapshot for history GROUP."
+  (codex-ide-config--snapshot
+   (plist-get group :snapshot-scope)
+   (plist-get group :session)))
+
+(defun codex-ide-config--history-group-record-scope (group scope)
+  "Return GROUP with config apply SCOPE recorded."
+  (let ((scopes (plist-get group :scopes)))
+    (if (and scope (not (memq scope scopes)))
+        (plist-put group :scopes (append scopes (list scope)))
+      group)))
+
+(defun codex-ide-config--history-group-display-scope (group)
+  "Return the display scope for grouped history GROUP."
+  (let ((scopes (plist-get group :scopes)))
+    (cond
+     ((null scopes) 'mixed-scope)
+     ((null (cdr scopes)) (car scopes))
+     (t 'mixed-scope))))
+
+(defun codex-ide-config--push-history (before after)
+  "Record BEFORE and AFTER snapshots in `codex-ide-config-history'."
+  (if codex-ide-config--history-group
+      (let ((group (codex-ide-config--history-group-record-scope
+                    codex-ide-config--history-group
+                    (plist-get before :scope))))
+        (setq codex-ide-config--history-group
+              (plist-put group
+                         :after
+                         (codex-ide-config--history-group-snapshot group))))
+    (codex-ide-config--push-history-entry
+     (list :time (plist-get before :time)
+           :scope (plist-get before :scope)
+           :before before
+           :after after))))
+
+(defun codex-ide-config--push-history-entry (entry)
+  "Push ENTRY onto `codex-ide-config-history' with limit trimming."
+  (push entry codex-ide-config-history)
+  (setq codex-ide-config-history
+        (seq-take codex-ide-config-history codex-ide-config-history-limit)))
+
+(defun codex-ide-config--merge-change-plists (base changes)
+  "Merge CHANGES into BASE and return the resulting plist."
+  (let ((merged (copy-sequence (or base '()))))
+    (while changes
+      (setq merged (plist-put merged (car changes) (cadr changes)))
+      (setq changes (cddr changes)))
+    merged))
+
+(defun codex-ide-config-begin-history-group (&optional session interaction-id)
+  "Start a grouped history entry for the current config interaction.
+Return the group INTERACTION-ID, defaulting to the current time."
+  (setq session (or session (codex-ide--get-default-session-for-current-buffer)))
+  (when codex-ide-config--history-group
+    (codex-ide-config-commit-history-group))
+  (let* ((interaction-id (or interaction-id (current-time)))
+         (snapshot-scope
+          (codex-ide-config--history-group-snapshot-scope session)))
+    (setq codex-ide-config--history-group
+          (list :interaction-id interaction-id
+                :time interaction-id
+                :origin 'menu-interaction
+                :scopes nil
+                :snapshot-scope snapshot-scope
+                :session session
+                :before (codex-ide-config--snapshot snapshot-scope session)
+                :after nil))
+    interaction-id))
+
+(defun codex-ide-config-commit-history-group ()
+  "Commit the pending grouped history entry, if any."
+  (when codex-ide-config--history-group
+    (let ((group codex-ide-config--history-group))
+      (setq codex-ide-config--history-group nil)
+      (let ((before (plist-get group :before))
+            (after (or (plist-get group :after)
+                       (plist-get group :before))))
+        (when-let* ((changes
+                     (codex-ide-config--history-menu-changed-values
+                      before
+                      after)))
+          (codex-ide-config--push-history-entry
+           (list :time (plist-get group :time)
+                 :interaction-id (plist-get group :interaction-id)
+                 :origin (plist-get group :origin)
+                 :scope (codex-ide-config--history-group-display-scope group)
+                 :scopes (plist-get group :scopes)
+                 :before before
+                 :after after
+                 :changes changes)))))))
+
+(defun codex-ide-config--snapshot-session-entry (snapshot session)
+  "Return SESSION's entry in SNAPSHOT, if present."
+  (seq-find (lambda (entry)
+              (eq (plist-get entry :session) session))
+            (plist-get snapshot :sessions)))
+
+(defun codex-ide-config--snapshot-sessions (before after)
+  "Return the session objects present in BEFORE or AFTER snapshots."
+  (let ((sessions nil))
+    (dolist (snapshot (list before after))
+      (dolist (entry (plist-get snapshot :sessions))
+        (let ((session (plist-get entry :session)))
+          (cl-pushnew session sessions :test #'eq))))
+    (nreverse sessions)))
+
+(defun codex-ide-config--snapshot-session-override-state
+    (snapshot session key)
+  "Return SESSION's override state for KEY in SNAPSHOT.
+The return value is (BOUND VALUE)."
+  (let* ((entry (codex-ide-config--snapshot-session-entry snapshot session))
+         (overrides (plist-get entry :overrides)))
+    (list (codex-ide-config--plist-member-p overrides key)
+          (plist-get overrides key))))
+
+(defun codex-ide-config--snapshot-session-effective-value
+    (snapshot session key)
+  "Return SESSION's effective KEY value in SNAPSHOT."
+  (let* ((state
+          (codex-ide-config--snapshot-session-override-state
+           snapshot session key))
+         (bound (car state))
+         (value (cadr state)))
+    (if bound
+        value
+      (plist-get (plist-get snapshot :globals) key))))
+
+(defun codex-ide-config--history-menu-changed-values (before after)
+  "Return changed (KEY . VALUE) pairs between grouped menu snapshots."
+  (let ((changes nil)
+        (sessions (codex-ide-config--snapshot-sessions before after)))
+    (dolist (key (codex-ide-config--keys))
+      (let* ((before-globals (plist-get before :globals))
+             (after-globals (plist-get after :globals))
+             (global-changed
+              (not (equal (plist-get before-globals key)
+                          (plist-get after-globals key))))
+             (changed-session nil)
+             (session-changed
+              (seq-some
+               (lambda (session)
+                 (let ((before-state
+                        (codex-ide-config--snapshot-session-override-state
+                         before session key))
+                       (after-state
+                        (codex-ide-config--snapshot-session-override-state
+                         after session key)))
+                   (when (or (not (eq (car before-state)
+                                      (car after-state)))
+                             (not (equal (cadr before-state)
+                                         (cadr after-state))))
+                     (setq changed-session session)
+                     t)))
+               sessions)))
+        (when (or global-changed session-changed)
+          (push (cons key
+                      (if global-changed
+                          (plist-get after-globals key)
+                        (codex-ide-config--snapshot-session-effective-value
+                         after changed-session key)))
+                changes))))
+    (nreverse changes)))
+
+(defun codex-ide-config--history-values-for-scope (snapshot scope)
+  "Return the config values in SNAPSHOT relevant to SCOPE."
+  (pcase scope
+    ('this-session
+     (plist-get (car (plist-get snapshot :sessions)) :overrides))
+    (_
+     (plist-get snapshot :globals))))
+
+(defun codex-ide-config--history-changed-values (entry)
+  "Return a list of changed (KEY . VALUE) pairs for history ENTRY."
+  (or (plist-get entry :changes)
+      (if (or (eq (plist-get entry :origin) 'menu-interaction)
+              (eq (plist-get entry :scope) 'menu-interaction))
+          (codex-ide-config--history-menu-changed-values
+           (plist-get entry :before)
+           (plist-get entry :after))
+        (let* ((scope (plist-get entry :scope))
+               (before (codex-ide-config--history-values-for-scope
+                        (plist-get entry :before) scope))
+               (after (codex-ide-config--history-values-for-scope
+                       (plist-get entry :after) scope))
+               (changes nil))
+          (dolist (key (codex-ide-config--keys))
+            (let ((before-bound (codex-ide-config--plist-member-p before key))
+                  (after-bound (codex-ide-config--plist-member-p after key))
+                  (before-value (plist-get before key))
+                  (after-value (plist-get after key)))
+              (when (or (not (eq before-bound after-bound))
+                        (not (equal before-value after-value)))
+                (push (cons key after-value) changes))))
+          (nreverse changes)))))
+
 (defun codex-ide-config--session-overrides (&optional session)
   "Return session-local config overrides for SESSION."
   (setq session (or session (codex-ide--get-default-session-for-current-buffer)))
@@ -186,6 +490,11 @@
   (if (codex-ide-config--session-value-bound-p key session)
       (codex-ide-config-session-value key session)
     (codex-ide-config--default-value key session)))
+
+(defun codex-ide-config-effective-reasoning-effort (&optional session)
+  "Return SESSION's effective reasoning effort, defaulting to medium."
+  (or (codex-ide-config-effective-value 'reasoning-effort session)
+      "medium"))
 
 (defun codex-ide-config-set-session-value (key value &optional session)
   "Set SESSION's override for config KEY to VALUE."
@@ -255,15 +564,169 @@
 
 (defun codex-ide-config-apply (key value scope &optional session)
   "Apply config KEY VALUE using SCOPE for SESSION."
-  (pcase scope
-    ('this-session
-     (codex-ide-config-apply-to-session key value session))
-    ('all-sessions
-     (codex-ide-config-apply-to-all-sessions key value))
-    ('future-sessions
-     (codex-ide-config-apply-future-sessions key value))
-    (_
-     (error "Unsupported Codex config scope: %S" scope))))
+  (let* ((session (or session (codex-ide--get-default-session-for-current-buffer)))
+         (before (codex-ide-config--snapshot scope session))
+         (count
+          (pcase scope
+            ('this-session
+             (codex-ide-config-apply-to-session key value session))
+            ('all-sessions
+             (codex-ide-config-apply-to-all-sessions key value))
+            ('future-sessions
+             (codex-ide-config-apply-future-sessions key value))
+            (_
+             (error "Unsupported Codex config scope: %S" scope)))))
+    (codex-ide-config--push-history
+     before
+     (codex-ide-config--snapshot scope session))
+    count))
+
+(defun codex-ide-config-apply-values (values scope &optional session)
+  "Apply config VALUES plist using SCOPE for SESSION.
+Return the number of live sessions affected."
+  (let* ((session (or session (codex-ide--get-default-session-for-current-buffer)))
+         (before (codex-ide-config--snapshot scope session))
+         (count 0))
+    (dolist (key (codex-ide-config--keys))
+      (when (codex-ide-config--plist-member-p values key)
+        (setq count
+              (max count
+                   (pcase scope
+                     ('this-session
+                      (codex-ide-config-apply-to-session
+                       key (plist-get values key) session))
+                     ('all-sessions
+                      (codex-ide-config-apply-to-all-sessions
+                       key (plist-get values key)))
+                     ('future-sessions
+                      (codex-ide-config-apply-future-sessions
+                       key (plist-get values key)))
+                     (_
+                      (error "Unsupported Codex config scope: %S" scope)))))))
+    (codex-ide-config--push-history
+     before
+     (codex-ide-config--snapshot scope session))
+    count))
+
+(defun codex-ide-config--preset-values (preset)
+  "Return the config values plist for PRESET."
+  (let ((values (if (consp preset) (cdr preset) preset)))
+    (unless (listp values)
+      (error "Invalid Codex config preset: %S" preset))
+    values))
+
+(defun codex-ide-config-apply-preset (preset scope &optional session)
+  "Apply config PRESET using SCOPE for SESSION."
+  (codex-ide-config-apply-values
+   (codex-ide-config--preset-values preset)
+   scope
+   session))
+
+(defun codex-ide-config-format-preset (preset)
+  "Return a compact display string for PRESET."
+  (let* ((name (car preset))
+         (values (codex-ide-config--preset-values preset))
+         (summary
+          (delq
+           nil
+           (mapcar
+            (lambda (key)
+              (when (codex-ide-config--plist-member-p values key)
+                (format "%s=%s"
+                        (codex-ide-config--label key)
+                        (codex-ide-config-format-value
+                         (plist-get values key)))))
+            (codex-ide-config--keys)))))
+    (if summary
+        (format "%s  %s" name (mapconcat #'identity summary "; "))
+      name)))
+
+(defun codex-ide-config-read-preset ()
+  "Read a config preset from the minibuffer."
+  (unless codex-ide-config-presets
+    (user-error "No Codex config presets configured"))
+  (let* ((candidates
+          (mapcar (lambda (preset)
+                    (cons (codex-ide-config-format-preset preset)
+                          preset))
+                  codex-ide-config-presets))
+         (completion-extra-properties
+          codex-ide-config--completion-extra-properties))
+    (cdr (assoc (completing-read "Apply config preset: "
+                                 candidates nil t)
+                candidates))))
+
+(defun codex-ide-config--restore-snapshot (snapshot)
+  "Restore config state from SNAPSHOT."
+  (when (plist-get snapshot :restore-globals)
+    (codex-ide-config--restore-global-values (plist-get snapshot :globals)))
+  (dolist (entry (plist-get snapshot :sessions))
+    (let ((session (plist-get entry :session)))
+      (when (codex-ide-session-p session)
+        (codex-ide-config--set-session-overrides
+         session
+         (copy-sequence (or (plist-get entry :overrides) '())))
+        (dolist (key (codex-ide-config--keys))
+          (codex-ide-config--refresh-session session key))))))
+
+(defun codex-ide-config-restore-history-entry (entry)
+  "Restore config state from history ENTRY."
+  (interactive
+   (list (codex-ide-config-read-history-entry)))
+  (codex-ide-config--restore-snapshot (plist-get entry :before))
+  (message "Restored Codex config snapshot: %s"
+           (codex-ide-config-format-history-entry entry)))
+
+(defun codex-ide-config-restore-last ()
+  "Restore the most recent config snapshot and remove it from history."
+  (interactive)
+  (unless codex-ide-config-history
+    (user-error "No Codex config history to restore"))
+  (let ((entry (pop codex-ide-config-history)))
+    (codex-ide-config--restore-snapshot (plist-get entry :before))
+    (message "Restored previous Codex config: %s"
+             (codex-ide-config-format-history-entry entry))))
+
+(defun codex-ide-config-format-history-entry (entry)
+  "Return a compact display string for history ENTRY."
+  (let* ((time (plist-get entry :time))
+         (scope (plist-get entry :scope))
+         (changes (codex-ide-config--history-changed-values entry))
+         (summary
+          (if changes
+              (mapconcat
+               (lambda (change)
+                 (format "%s=%s"
+                         (codex-ide-config--label (car change))
+                         (codex-ide-config-format-value (cdr change))))
+               changes
+               "; ")
+            "(no changed values)")))
+    (format "%s  %s  %s"
+            (format-time-string "%Y-%m-%d %H:%M" time)
+            (pcase scope
+              ('this-session "this session")
+              ('all-sessions "all live + future")
+              ('future-sessions "future sessions")
+              ('mixed-scope "mixed scope")
+              ('menu-interaction "mixed scope")
+              (_ (format "%S" scope)))
+            summary)))
+
+(defun codex-ide-config-read-history-entry ()
+  "Read a config history entry from the minibuffer."
+  (unless codex-ide-config-history
+    (user-error "No Codex config history to restore"))
+  (let* ((candidates
+          (mapcar (lambda (entry)
+                    (cons (codex-ide-config-format-history-entry entry)
+                          entry))
+                  codex-ide-config-history))
+         (completion-extra-properties
+          codex-ide-config--completion-extra-properties))
+    (cdr (assoc (completing-read "Restore config snapshot: "
+                                 candidates nil t)
+                candidates))))
 
 (defun codex-ide-config-read-scope (&optional session)
   "Read the target scope for a session-aware config change.
@@ -287,7 +750,7 @@ without prompting."
      (t
       (cdr
        (assoc
-	(completing-read "Apply to: "
+        (completing-read "Apply to: "
                          codex-ide-config--scope-choices-outside-session
                          nil t nil nil
                          (caar codex-ide-config--scope-choices-outside-session))

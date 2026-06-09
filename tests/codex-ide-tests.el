@@ -4158,6 +4158,26 @@
 								 session))
 						     "high")))))))
 
+  (ert-deftest codex-ide-thread-start-and-resume-include-session-aware-fast ()
+    (let ((project-dir (codex-ide-test--make-temp-project))
+          (codex-ide-fast "off"))
+      (codex-ide-test-with-fixture project-dir
+				   (codex-ide-test-with-fake-processes
+				    (let ((session (codex-ide--create-process-session)))
+				      (codex-ide-config-set-session-value
+				       'fast
+				       "on"
+				       session)
+				      (should (equal (alist-get 'serviceTier
+								(codex-ide--thread-start-params
+								 session))
+						     "priority"))
+				      (should (equal (alist-get 'serviceTier
+								(codex-ide--thread-resume-params
+								 "thread-1"
+								 session))
+						     "priority")))))))
+
   (ert-deftest codex-ide-submit-includes-model-when-configured ()
     (let ((project-dir (codex-ide-test--make-temp-project))
           (submitted nil)
@@ -4180,6 +4200,7 @@
           (submitted nil)
           (codex-ide-approval-policy "never")
           (codex-ide-sandbox-mode "workspace-write")
+          (codex-ide-fast "on")
           (codex-ide-personality "friendly"))
       (codex-ide-test-with-fixture project-dir
 				   (codex-ide-test-with-fake-processes
@@ -4196,6 +4217,8 @@
 				      (should (equal (alist-get 'sandboxPolicy submitted)
 						     `((type . "workspaceWrite")
 						       (writableRoots . [,(codex-ide--get-working-directory)]))))
+				      (should (equal (alist-get 'serviceTier submitted)
+						     "priority"))
 				      (should (equal (alist-get 'personality submitted) "friendly")))))))
 
   (ert-deftest codex-ide-submit-remembers-submitted-model-for-header ()
@@ -4218,6 +4241,90 @@
 				      (should updated)
 				      (should (equal (codex-ide--server-model-name session)
 						     "gpt-5.4-mini")))))))
+
+  (ert-deftest codex-ide-reported-config-mismatch-is-messaged-and-logged ()
+    (let ((project-dir (codex-ide-test--make-temp-project))
+          (codex-ide-model "gpt-5.4-mini")
+          (codex-ide-fast "on")
+          (codex-ide-reasoning-effort "high")
+          (messages nil)
+          (logs nil))
+      (codex-ide-test-with-fixture project-dir
+				   (codex-ide-test-with-fake-processes
+				    (let ((session (codex-ide--create-process-session)))
+				      (setf (codex-ide-session-thread-id session)
+					    "thread-config-mismatch")
+				      (with-current-buffer (codex-ide-session-buffer session)
+					(codex-ide--insert-input-prompt session "Explain this")
+					(cl-letf (((symbol-function 'codex-ide--request-sync)
+						   (lambda (&rest _) nil)))
+					  (codex-ide--submit-prompt)))
+				      (cl-letf (((symbol-function 'message)
+						 (lambda (format-string &rest args)
+						   (push (apply #'format format-string args)
+							 messages)))
+						((symbol-function 'codex-ide-log-message)
+						 (lambda (_session format-string &rest args)
+						   (push (apply #'format format-string args)
+							 logs))))
+					(codex-ide--handle-notification
+					 session
+					 '((method . "thread/settings/updated")
+					   (params
+					    . ((threadId . "thread-config-mismatch")
+					       (threadSettings
+						. ((model . "gpt-5.4")
+						   (effort . "medium")
+						   (serviceTier . "standard"))))))))
+				      (should (seq-some
+					       (lambda (text)
+						 (string-match-p
+						  "Codex config mismatch:"
+						  text))
+					       messages))
+				      (should (seq-some
+					       (lambda (text)
+						 (string-match-p
+						  "Config mismatch after thread/settings/updated"
+						  text))
+					       logs)))))))
+
+  (ert-deftest codex-ide-reported-config-match-uses-submitted-snapshot ()
+    (let ((project-dir (codex-ide-test--make-temp-project))
+          (codex-ide-model "gpt-5.4-mini")
+          (messages nil))
+      (codex-ide-test-with-fixture project-dir
+				   (codex-ide-test-with-fake-processes
+				    (let ((session (codex-ide--create-process-session)))
+				      (setf (codex-ide-session-thread-id session)
+					    "thread-config-match")
+				      (with-current-buffer (codex-ide-session-buffer session)
+					(codex-ide--insert-input-prompt session "Explain this")
+					(cl-letf (((symbol-function 'codex-ide--request-sync)
+						   (lambda (&rest _) nil)))
+					  (codex-ide--submit-prompt)))
+				      (codex-ide-config-set-session-value
+				       'model
+				       "gpt-5.3"
+				       session)
+				      (cl-letf (((symbol-function 'message)
+						 (lambda (format-string &rest args)
+						   (push (apply #'format format-string args)
+							 messages))))
+					(codex-ide--handle-notification
+					 session
+					 '((method . "turn/started")
+					   (params
+					    . ((threadId . "thread-config-match")
+					       (turn
+						. ((id . "turn-config-match")
+						   (model . "gpt-5.4-mini")))))))
+					(should-not (seq-some
+						     (lambda (text)
+						       (string-match-p
+							"Codex config mismatch:"
+							text))
+						     messages))))))))
 
   (ert-deftest codex-ide-header-line-uses-updated-compact-format ()
     (let* ((project-dir (codex-ide-test--make-temp-project))
@@ -4256,7 +4363,7 @@
 					(should
 					 (equal
 						  (format-mode-line header-line-format)
-						  " Focus: focused-source-buffer | Model: gpt-5.4 | Quota: 15%/5h 3%/wk (prolite) | Context: 43.1k/258.4k (305.5k total)"))))))))
+						  " Focus: focused-source-buffer | Model: gpt-5.4 (medium) | Quota: 15%/5h 3%/wk (prolite) | Context: 43.1k/258.4k (305.5k total)"))))))))
 
   (ert-deftest codex-ide-header-line-shows-compact-rate-limit-resets ()
     (let* ((project-dir (codex-ide-test--make-temp-project))
@@ -4350,17 +4457,58 @@
 					(should (string-match-p "Model: gpt-5\\.4"
 								(substring-no-properties header-line-format)))))))))
 
+  (ert-deftest codex-ide-header-line-prefers-local-config-model ()
+    (let ((project-dir (codex-ide-test--make-temp-project))
+          (codex-ide-model "gpt-5.4"))
+      (codex-ide-test-with-fixture project-dir
+				   (codex-ide-test-with-fake-processes
+				    (let ((session (codex-ide--create-process-session)))
+				      (codex-ide--session-metadata-put session :model-name "gpt-5.4-mini")
+				      (with-current-buffer (codex-ide-session-buffer session)
+					(codex-ide--update-header-line session)
+					(should (string-match-p "Model: gpt-5\\.4"
+								(substring-no-properties header-line-format)))
+					(should-not (string-match-p "Model: gpt-5\\.4-mini"
+								    (substring-no-properties header-line-format)))))))))
+
   (ert-deftest codex-ide-header-line-shows-model-reasoning-effort-when-set ()
-    (let ((project-dir (codex-ide-test--make-temp-project)))
+    (let ((project-dir (codex-ide-test--make-temp-project))
+          (codex-ide-reasoning-effort "high"))
       (codex-ide-test-with-fixture project-dir
 				   (codex-ide-test-with-fake-processes
 				    (let ((session (codex-ide--create-process-session)))
 				      (codex-ide--session-metadata-put session :model-name "gpt-5.4")
-				      (codex-ide--session-metadata-put session :reasoning-effort "high")
 				      (with-current-buffer (codex-ide-session-buffer session)
 					(codex-ide--update-header-line session)
 					(should (string-match-p "Model: gpt-5\\.4 (high)"
 								(format-mode-line header-line-format)))))))))
+
+  (ert-deftest codex-ide-header-line-shows-fast-with-reasoning-effort ()
+    (let ((project-dir (codex-ide-test--make-temp-project))
+          (codex-ide-fast "on")
+          (codex-ide-reasoning-effort "high"))
+      (codex-ide-test-with-fixture project-dir
+				   (codex-ide-test-with-fake-processes
+				    (let ((session (codex-ide--create-process-session)))
+				      (codex-ide--session-metadata-put session :model-name "gpt-5.4")
+				      (with-current-buffer (codex-ide-session-buffer session)
+					(codex-ide--update-header-line session)
+					(should (string-match-p
+						 (regexp-quote "Model: gpt-5.4 (high + fast)")
+						 (format-mode-line header-line-format)))))))))
+
+  (ert-deftest codex-ide-header-line-shows-fast-with-default-reasoning-effort ()
+    (let ((project-dir (codex-ide-test--make-temp-project))
+          (codex-ide-fast "on"))
+      (codex-ide-test-with-fixture project-dir
+				   (codex-ide-test-with-fake-processes
+				    (let ((session (codex-ide--create-process-session)))
+				      (codex-ide--session-metadata-put session :model-name "gpt-5.4")
+				      (with-current-buffer (codex-ide-session-buffer session)
+					(codex-ide--update-header-line session)
+					(should (string-match-p
+						 (regexp-quote "Model: gpt-5.4 (medium + fast)")
+						 (format-mode-line header-line-format)))))))))
 
   (ert-deftest codex-ide-header-line-uses-session-aware-reasoning-effort-fallback ()
     (let ((project-dir (codex-ide-test--make-temp-project))
@@ -4407,7 +4555,7 @@
 					(should (string-match-p "Model: gpt-5\\.4-mini (medium)"
 								(format-mode-line header-line-format)))))))))
 
-  (ert-deftest codex-ide-header-line-prefers-session-model-over-global-default ()
+  (ert-deftest codex-ide-header-line-reflects-session-model-config-change ()
     (let ((project-dir (codex-ide-test--make-temp-project))
           (codex-ide-model "gpt-5.4"))
       (codex-ide-test-with-fixture project-dir
@@ -4415,11 +4563,15 @@
 				    (let ((session (codex-ide--create-process-session)))
 				      (setf (codex-ide-session-thread-id session) "thread-1")
 				      (codex-ide--session-metadata-put session :model-name "gpt-5.4-mini")
+				      (codex-ide-config-set-session-value
+				       'model
+				       "gpt-5.3"
+				       session)
 				      (with-current-buffer (codex-ide-session-buffer session)
 					(codex-ide--update-header-line session)
-					(should (string-match-p "Model: gpt-5\\.4-mini"
+					(should (string-match-p "Model: gpt-5\\.3"
 								(substring-no-properties header-line-format)))
-					(should-not (string-match-p "Model: gpt-5\\.4\\([^.-]\\|$\\)"
+					(should-not (string-match-p "Model: gpt-5\\.4-mini"
 								    (substring-no-properties header-line-format)))))))))
 
   (ert-deftest codex-ide-header-line-requests-server-model-when-session-model-is-unset ()
@@ -4478,6 +4630,20 @@
 						       '("gpt-5.4" "gpt-5.4-mini")))
 					(should (equal requested-method "model/list"))
 					(should (equal requested-params '((limit . 100))))))))))
+
+  (ert-deftest codex-ide-fast-service-tier-is-omitted-when-fast-is-off ()
+    (let ((project-dir (codex-ide-test--make-temp-project))
+          (codex-ide-fast "off"))
+      (codex-ide-test-with-fixture project-dir
+				   (codex-ide-test-with-fake-processes
+				    (let ((session (codex-ide--create-process-session)))
+				      (should-not (alist-get 'serviceTier
+							     (codex-ide--thread-start-params
+							      session)))
+				      (should-not (alist-get 'serviceTier
+							     (codex-ide--thread-resume-params
+							      "thread-1"
+							      session))))))))
 
   (ert-deftest codex-ide-config-read-sends-object-params-with-cwd ()
     (let ((project-dir (codex-ide-test--make-temp-project))

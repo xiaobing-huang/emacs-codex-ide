@@ -18,6 +18,7 @@
 (require 'codex-ide-renderer)
 
 (declare-function codex-ide-config-effective-value "codex-ide-config" (key &optional session))
+(declare-function codex-ide-config-effective-reasoning-effort "codex-ide-config" (&optional session))
 
 (defcustom codex-ide-live-usage-refresh-delay 0.1
   "Seconds to coalesce visible usage refreshes during streaming turns."
@@ -96,20 +97,30 @@
 (defun codex-ide--format-model-summary (&optional session)
   "Return a compact header summary for SESSION's model."
   (let ((model (and session
-                    (codex-ide--server-model-name session)))
+                    (or (let ((configured
+                               (codex-ide-config-effective-value
+                                'model
+                                session)))
+                          (and (stringp configured)
+                               (not (string-empty-p configured))
+                               configured))
+                        (codex-ide--server-model-name session))))
         (effort (and session
-                     (or (codex-ide-config-effective-value
-                          'reasoning-effort
-                          session)
-                         (codex-ide--session-metadata-get session :reasoning-effort)))))
+                     (codex-ide-config-effective-reasoning-effort session)))
+        (fast (and session
+                   (equal (codex-ide-config-effective-value 'fast session)
+                          "on"))))
     (unless model
       (codex-ide--ensure-server-model-name session))
     (when model
-      (format "Model: %s%s"
-              model
-              (if effort
-                  (format " (%s)" effort)
-                "")))))
+      (let ((details (delq nil
+                           (list effort
+                                 (and fast "fast")))))
+        (format "Model: %s%s"
+                model
+                (if details
+                    (format " (%s)" (string-join details " + "))
+                  ""))))))
 
 (defun codex-ide--format-rate-limit-window-label (window)
   "Return a compact label for rate limit WINDOW."

@@ -61,6 +61,7 @@
                   (session &key newly-created select))
 (declare-function codex-ide--sync-prompt-minor-mode "codex-ide-session-mode" (&optional session))
 (declare-function codex-ide-config-effective-value "codex-ide-config" (key &optional session))
+(declare-function codex-ide-config-effective-reasoning-effort "codex-ide-config" (&optional session))
 (declare-function codex-ide-log-message "codex-ide-log" (session format-string &rest args))
 
 (defvar codex-ide-log-max-lines)
@@ -4745,6 +4746,10 @@ compatibility with older app-server payloads and global notifications."
 	("thread/settings/updated"
 	 (codex-ide--remember-reasoning-effort session params)
 	 (codex-ide--remember-model-name session params)
+	 (codex-ide--check-reported-turn-config
+          session
+          "thread/settings/updated"
+          params)
 	 (codex-ide-log-message
 	  session
 	  "Thread settings updated: model=%s effort=%s"
@@ -4796,6 +4801,10 @@ compatibility with older app-server payloads and global notifications."
 	("turn/started"
 	 (codex-ide--remember-reasoning-effort session params)
 	 (codex-ide--remember-or-request-model-name session params)
+	 (codex-ide--check-reported-turn-config
+          session
+          "turn/started"
+          params)
 	 (let ((turn-id (or (alist-get 'id (alist-get 'turn params))
                             (alist-get 'turnId params))))
            (setf (codex-ide-session-current-turn-id session) turn-id
@@ -4826,6 +4835,10 @@ compatibility with older app-server payloads and global notifications."
 	 (when-let* ((item (alist-get 'item params)))
            (when (codex-ide--remember-or-request-model-name session item)
              (codex-ide--update-header-line session))
+           (codex-ide--check-reported-turn-config
+            session
+            "item/started"
+            item)
            (codex-ide-log-message
             session
             "Item started: %s (%s)"
@@ -4917,6 +4930,10 @@ compatibility with older app-server payloads and global notifications."
 	 (when-let* ((item (alist-get 'item params)))
            (when (codex-ide--remember-or-request-model-name session item)
              (codex-ide--update-header-line session))
+           (codex-ide--check-reported-turn-config
+            session
+            "item/completed"
+            item)
            (codex-ide-log-message
             session
             "Item completed: %s (%s, status=%s)"
@@ -5033,33 +5050,166 @@ compatibility with older app-server payloads and global notifications."
              (buffer-name session-buffer)
            "its session buffer"))))))
 
+(defun codex-ide--turn-start-params (session thread-id payload)
+  "Build `turn/start` params for SESSION THREAD-ID using PAYLOAD."
+  `((threadId . ,thread-id)
+    ,@(when-let* ((approval-policy
+                   (codex-ide-config-effective-value 'approval-policy session)))
+        `((approvalPolicy . ,approval-policy)))
+    ,@(when-let* ((sandbox-policy
+                   (codex-ide--turn-start-sandbox-policy session)))
+        `((sandboxPolicy . ,sandbox-policy)))
+    ,@(when-let* ((model (codex-ide-config-effective-value 'model session)))
+        `((model . ,model)))
+    ,@(when-let* ((service-tier
+                   (codex-ide--fast-service-tier session)))
+        `((serviceTier . ,service-tier)))
+    (effort . ,(codex-ide-config-effective-reasoning-effort session))
+    ,@(when-let* ((personality
+                   (codex-ide-config-effective-value 'personality session)))
+        `((personality . ,personality)))
+    (input . ,(alist-get 'input payload))))
+
+(defun codex-ide--turn-config-snapshot (params)
+  "Return the config-related subset of `turn/start` PARAMS."
+  (delq nil
+        (mapcar (lambda (key)
+                  (when-let* ((value (alist-get key params)))
+                    (cons key value)))
+                '(approvalPolicy
+                  sandboxPolicy
+                  model
+                  serviceTier
+                  effort
+                  personality))))
+
+(defun codex-ide--nested-reported-config-value (payload key)
+  "Return KEY from PAYLOAD or one of app-server's nested config containers."
+  (let* ((thread (and (listp payload) (alist-get 'thread payload)))
+         (turn (and (listp payload) (alist-get 'turn payload)))
+         (item (and (listp payload) (alist-get 'item payload)))
+         (result (and (listp payload) (alist-get 'result payload)))
+         (thread-settings (and (listp payload)
+                               (alist-get 'threadSettings payload)))
+         (root (and (listp payload)
+                    (or (alist-get 'config payload)
+                        (alist-get 'effectiveConfig payload))))
+         (settings (and (listp root)
+                        (or (alist-get 'settings root)
+                            (alist-get 'config root)))))
+    (seq-find
+     (lambda (value)
+       (not (null value)))
+     (list (and (listp payload) (alist-get key payload))
+           (and (listp thread) (alist-get key thread))
+           (and (listp turn) (alist-get key turn))
+           (and (listp item) (alist-get key item))
+           (and (listp result) (alist-get key result))
+           (and (listp thread-settings) (alist-get key thread-settings))
+           (and (listp root) (alist-get key root))
+           (and (listp settings) (alist-get key settings))))))
+
+(defun codex-ide--reported-turn-config (payload)
+  "Extract config settings reported by app-server PAYLOAD."
+  (delq nil
+        (list
+         (when-let* ((model (codex-ide--extract-model-name payload)))
+           (cons 'model model))
+         (when-let* ((service-tier
+                      (codex-ide--nested-reported-config-value
+                       payload
+                       'serviceTier)))
+           (cons 'serviceTier service-tier))
+         (when-let* ((effort (codex-ide--extract-reasoning-effort payload)))
+           (cons 'effort effort))
+         (when-let* ((approval-policy
+                      (codex-ide--nested-reported-config-value
+                       payload
+                       'approvalPolicy)))
+           (cons 'approvalPolicy approval-policy))
+         (when-let* ((sandbox-policy
+                      (codex-ide--nested-reported-config-value
+                       payload
+                       'sandboxPolicy)))
+           (cons 'sandboxPolicy sandbox-policy))
+         (when-let* ((personality
+                      (codex-ide--nested-reported-config-value
+                       payload
+                       'personality)))
+           (cons 'personality personality)))))
+
+(defun codex-ide--turn-config-mismatches (submitted reported)
+  "Return settings where REPORTED disagrees with SUBMITTED."
+  (delq nil
+        (mapcar
+         (lambda (entry)
+           (let* ((key (car entry))
+                  (submitted-value (cdr entry))
+                  (reported-value (alist-get key reported)))
+             (when (and reported-value
+                        (not (equal submitted-value reported-value)))
+               (list key submitted-value reported-value))))
+         submitted)))
+
+(defun codex-ide--format-turn-config-mismatches (mismatches)
+  "Return a compact user-facing string for config MISMATCHES."
+  (string-join
+   (mapcar
+    (lambda (mismatch)
+      (format "%s sent %S, app-server reported %S"
+              (car mismatch)
+              (cadr mismatch)
+              (caddr mismatch)))
+    mismatches)
+   "; "))
+
+(defun codex-ide--check-reported-turn-config (session source payload)
+  "Surface mismatches between submitted turn config and reported PAYLOAD."
+  (when-let* ((submitted (codex-ide--session-metadata-get
+                          session
+                          :submitted-turn-config)))
+    (let* ((reported (codex-ide--reported-turn-config payload))
+           (mismatches (codex-ide--turn-config-mismatches submitted reported))
+           (previous (codex-ide--session-metadata-get
+                      session
+                      :submitted-turn-config-mismatch)))
+      (when mismatches
+        (unless (equal mismatches previous)
+          (codex-ide--session-metadata-put
+           session
+           :submitted-turn-config-mismatch
+           mismatches)
+          (message
+           "Codex config mismatch: %s"
+           (codex-ide--format-turn-config-mismatches mismatches))
+          (codex-ide-log-message
+           session
+           "Config mismatch after %s: submitted=%S reported=%S payload=%S mismatches=%S"
+           source
+           submitted
+           reported
+           payload
+           mismatches))))))
+
 (defun codex-ide--send-turn-start (session thread-id payload)
   "Send a `turn/start` request for SESSION THREAD-ID using PAYLOAD."
-  (when-let* ((effort (codex-ide-config-effective-value 'reasoning-effort session)))
+  (let ((params (codex-ide--turn-start-params session thread-id payload)))
     (codex-ide--session-metadata-put
      session
      :reasoning-effort
-     effort))
-  (codex-ide--request-sync
-   session
-   "turn/start"
-   `((threadId . ,thread-id)
-     ,@(when-let* ((approval-policy
-                    (codex-ide-config-effective-value 'approval-policy session)))
-         `((approvalPolicy . ,approval-policy)))
-     ,@(when-let* ((sandbox-policy
-                    (codex-ide--turn-start-sandbox-policy session)))
-         `((sandboxPolicy . ,sandbox-policy)))
-     ,@(when-let* ((model (codex-ide-config-effective-value 'model session)))
-         `((model . ,model)))
-     ,@(when-let* ((effort (codex-ide-config-effective-value
-                            'reasoning-effort
-                            session)))
-         `((effort . ,effort)))
-     ,@(when-let* ((personality
-                    (codex-ide-config-effective-value 'personality session)))
-         `((personality . ,personality)))
-     (input . ,(alist-get 'input payload)))))
+     (alist-get 'effort params))
+    (codex-ide--session-metadata-put
+     session
+     :submitted-turn-config
+     (codex-ide--turn-config-snapshot params))
+    (codex-ide--session-metadata-put
+     session
+     :submitted-turn-config-mismatch
+     nil)
+    (codex-ide--request-sync
+     session
+     "turn/start"
+     params)))
 
 (defun codex-ide--after-turn-start-submitted (session payload)
   "Update SESSION state after successfully submitting PAYLOAD."
