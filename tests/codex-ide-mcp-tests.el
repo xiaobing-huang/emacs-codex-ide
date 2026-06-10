@@ -356,6 +356,60 @@
       (kill-buffer input-buffer)
       (kill-buffer output-buffer))))
 
+(ert-deftest codex-ide-mcp-script-times-out-slow-emacsclient ()
+  (let ((script-path (expand-file-name "bin/codex-ide-mcp-server.py"
+                                       codex-ide-test--root-directory))
+        (mock-emacsclient (make-temp-file "codex-ide-emacsclient-" nil ".py"))
+        (input-buffer (generate-new-buffer " *codex-ide-mcp-timeout-input*"))
+        (output-buffer (generate-new-buffer " *codex-ide-mcp-timeout-output*")))
+    (unwind-protect
+        (progn
+          (with-temp-file mock-emacsclient
+            (insert "#!/usr/bin/env python3\n")
+            (insert "import time\n")
+            (insert "time.sleep(2)\n"))
+          (set-file-modes mock-emacsclient #o755)
+          (with-current-buffer input-buffer
+            (let ((json-object-type 'alist)
+                  (json-array-type 'list)
+                  (json-key-type 'string))
+              (insert
+               (json-encode
+                '((jsonrpc . "2.0")
+                  (id . 1)
+                  (method . "tools/call")
+                  (params . ((name . "emacs_get_all_buffers")
+                             (arguments . ())))))
+               "\n")))
+          (should
+           (equal
+            (with-current-buffer input-buffer
+              (call-process-region
+               (point-min)
+               (point-max)
+               "python3"
+               nil
+               output-buffer
+               nil
+               script-path
+               "--emacsclient"
+               mock-emacsclient
+               "--emacsclient-timeout"
+               "0.1"))
+            0))
+          (let* ((response (codex-ide-mcp-test--read-response
+                            (with-current-buffer output-buffer
+                              (buffer-string))))
+                 (tool-result (alist-get "result" response nil nil #'equal))
+                 (content (car (alist-get "content" tool-result nil nil #'equal))))
+            (should (alist-get "isError" tool-result nil nil #'equal))
+            (should (string-match-p "emacsclient timed out"
+                                    (alist-get "text" content nil nil #'equal)))))
+      (when (file-exists-p mock-emacsclient)
+        (delete-file mock-emacsclient))
+      (kill-buffer input-buffer)
+      (kill-buffer output-buffer))))
+
 (ert-deftest codex-ide-mcp-script-decodes-base64-bridge-response-with-control-and-unicode-text ()
   (let ((script-path (expand-file-name "bin/codex-ide-mcp-server.py"
                                        codex-ide-test--root-directory))

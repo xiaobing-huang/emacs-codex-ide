@@ -10,12 +10,15 @@ import json
 import os
 import subprocess
 import sys
+import time
 from typing import Any
 
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_INFO = {"name": "codex-ide-emacs-bridge", "version": "0.1.0"}
 DEBUG_LOG_PATH = "/tmp/codex-ide-mcp-debug.log"
+DEFAULT_EMACSCLIENT_TIMEOUT_SEC = 55.0
+DEBUG_VALUE_PREVIEW_BYTES = 512
 
 
 @dataclass(frozen=True)
@@ -237,6 +240,12 @@ def debug_log(*parts: object) -> None:
         pass
 
 
+def debug_bytes(label: str, value: bytes) -> None:
+    preview = repr(value[:DEBUG_VALUE_PREVIEW_BYTES])
+    suffix = " (truncated)" if len(value) > DEBUG_VALUE_PREVIEW_BYTES else ""
+    debug_log(f"{label}: {len(value)} bytes {preview}{suffix}")
+
+
 def parse_json_message(body: bytes) -> dict[str, Any]:
     try:
         message = json.loads(body.decode("utf-8"))
@@ -301,9 +310,10 @@ def write_message(payload: dict[str, Any]) -> None:
 
 
 class EmacsProxy:
-    def __init__(self, emacsclient: str, server_name: str | None) -> None:
+    def __init__(self, emacsclient: str, server_name: str | None, timeout_sec: float) -> None:
         self.emacsclient = emacsclient
         self.server_name = server_name
+        self.timeout_sec = timeout_sec
 
     def _elisp_string(self, value: str) -> str:
         return json.dumps(value, ensure_ascii=True)
@@ -322,14 +332,24 @@ class EmacsProxy:
             command.extend(["-s", self.server_name])
         command.extend(["--eval", self._tool_call_expression(name, params)])
         debug_log("dispatch command:", command)
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            check=False,
-        )
-        debug_log("dispatch return code:", completed.returncode)
-        debug_log("dispatch stdout:", repr(completed.stdout))
-        debug_log("dispatch stderr:", repr(completed.stderr))
+        started = time.monotonic()
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                check=False,
+                timeout=self.timeout_sec,
+            )
+        except subprocess.TimeoutExpired as exc:
+            elapsed = time.monotonic() - started
+            debug_log(f"dispatch timed out after {elapsed:.3f}s")
+            debug_bytes("dispatch stdout", exc.stdout or b"")
+            debug_bytes("dispatch stderr", exc.stderr or b"")
+            raise RuntimeError(f"emacsclient timed out after {self.timeout_sec:g}s") from exc
+        elapsed = time.monotonic() - started
+        debug_log(f"dispatch return code: {completed.returncode} elapsed: {elapsed:.3f}s")
+        debug_bytes("dispatch stdout", completed.stdout)
+        debug_bytes("dispatch stderr", completed.stderr)
         if completed.returncode != 0:
             stderr = completed.stderr.strip() or completed.stdout.strip() or b"emacsclient failed"
             raise RuntimeError(stderr.decode("utf-8", errors="replace"))
@@ -402,10 +422,11 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--emacsclient", default="emacsclient")
     parser.add_argument("--server-name", default=None)
+    parser.add_argument("--emacsclient-timeout", type=float, default=DEFAULT_EMACSCLIENT_TIMEOUT_SEC)
     args = parser.parse_args()
     debug_log("parsed args:", args)
 
-    proxy = EmacsProxy(args.emacsclient, args.server_name)
+    proxy = EmacsProxy(args.emacsclient, args.server_name, args.emacsclient_timeout)
 
     while True:
         try:

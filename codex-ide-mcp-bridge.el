@@ -64,6 +64,11 @@ behavior."
   :type 'integer
   :group 'codex-ide)
 
+(defcustom codex-ide-mcp-bridge-buffer-slice-text-limit 50000
+  "Maximum number of characters returned by one buffer slice request."
+  :type 'integer
+  :group 'codex-ide)
+
 ;;;###autoload
 (defcustom codex-ide-emacs-bridge-script-path nil
   "Path to the standalone Emacs MCP bridge script.
@@ -726,11 +731,15 @@ The result is an alist containing `text', `text-truncated', and
                             (goto-char (point-min))
                             (forward-line (1- start-line))
                             (point)))
-               (end-pos (codex-ide-mcp-bridge--goto-line-end-inclusive end-line)))
+               (requested-end-pos (codex-ide-mcp-bridge--goto-line-end-inclusive end-line))
+               (limit (max 0 codex-ide-mcp-bridge-buffer-slice-text-limit))
+               (end-pos (min requested-end-pos (+ start-pos limit)))
+               (truncated (< end-pos requested-end-pos)))
           `((buffer . ,(buffer-name buffer))
             (start-line . ,start-line)
             (end-line . ,end-line)
             (line-count . ,line-count)
+            (text-truncated . ,(codex-ide-mcp-bridge--json-bool truncated))
             (text . ,(buffer-substring-no-properties start-pos end-pos))))))))
 
 (defun codex-ide-mcp-bridge--tool-call--get_region_text (params)
