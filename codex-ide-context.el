@@ -29,6 +29,7 @@
 (require 'seq)
 (require 'subr-x)
 (require 'codex-ide-core)
+(require 'codex-ide-mention)
 
 (defvar codex-ide-emacs-context-policy 'all
   "Which Emacs context blocks to include in submitted prompts.")
@@ -225,7 +226,11 @@ Return an alist containing either `(buffer . BUFFER)' or `(discarded . t)'."
 
 (defun codex-ide--push-prompt-history (session prompt)
   "Record PROMPT in SESSION history."
-  (let ((trimmed (string-trim-right prompt)))
+  (let ((trimmed
+         (string-trim-right
+          (codex-ide-mention-encode-history
+           (or prompt "")
+           session))))
     (unless (string-empty-p trimmed)
       (codex-ide--project-persisted-put
        :prompt-history
@@ -308,7 +313,11 @@ When SUPPRESS-CONTEXT is non-nil, omit Emacs session and prompt context."
          (prompt-prefix (unless (codex-ide--leading-emacs-context-prefix-p prompt)
                           context-prefix))
          (full-prompt (string-join (delq nil (list session-prefix prompt-prefix prompt))
-                                   "\n\n")))
+                                   "\n\n"))
+         (skill-input-items
+          (codex-ide-mention-input-items
+           (or prompt "")
+           session)))
     `((context-summary . ,(alist-get 'summary context-payload))
       (included-session-context . ,(and session-prefix t))
       (input . ,(vconcat
@@ -316,7 +325,8 @@ When SUPPRESS-CONTEXT is non-nil, omit Emacs session and prompt context."
                            (text . ,full-prompt)))
                  (codex-ide--local-image-input-items
                   local-images
-                  image-detail))))))
+                  image-detail)
+                 skill-input-items)))))
 
 (cl-defun codex-ide--compose-turn-input
     (prompt &key local-images image-detail suppress-context)

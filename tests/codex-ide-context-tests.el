@@ -29,6 +29,14 @@
                       (point-max)))))
     nil))
 
+(defun codex-ide-context-test--skill (name description)
+  "Return a test skill named NAME with DESCRIPTION."
+  `((name . ,name)
+    (description . ,description)
+    (enabled . t)
+    (path . ,(format "/tmp/%s/SKILL.md" name))
+    (scope . "user")))
+
 (ert-deftest codex-ide-first-submit-injects-session-context-once ()
   (let* ((project-dir (codex-ide-test--make-temp-project))
          (file-path (codex-ide-test--make-project-file
@@ -215,6 +223,57 @@
         (should (equal (alist-get 'path image-item) image-path))
         (should (equal (alist-get 'detail image-item) "high"))))))
 
+(ert-deftest codex-ide-compose-turn-input-appends-skill-items ()
+  (let ((project-dir (codex-ide-test--make-temp-project))
+        (codex-ide--session-metadata (make-hash-table :test 'eq)))
+    (codex-ide-test-with-fixture project-dir
+      (let ((session (codex-ide--create-process-session)))
+        (codex-ide--session-metadata-put
+         session
+         :skills-list
+         (list (codex-ide-context-test--skill
+                "imagegen"
+                "Generate images.")
+               (codex-ide-context-test--skill
+                "skill-creator"
+                "Create skills.")))
+        (codex-ide--session-metadata-put session :skills-list-state 'ready)
+        (let* ((input (let ((codex-ide--session session))
+                        (codex-ide--compose-turn-input
+                         "Use $imagegen and $skill-creator")))
+               (text-item (aref input 0))
+               (first-skill (aref input 1))
+               (second-skill (aref input 2)))
+          (should (= (length input) 3))
+          (should (equal (alist-get 'type text-item) "text"))
+          (should (string-match-p "Use \\$imagegen and \\$skill-creator"
+                                  (alist-get 'text text-item)))
+          (should (equal (alist-get 'type first-skill) "skill"))
+          (should (equal (alist-get 'name first-skill) "imagegen"))
+          (should (equal (alist-get 'path first-skill)
+                         "/tmp/imagegen/SKILL.md"))
+          (should (equal (alist-get 'type second-skill) "skill"))
+          (should (equal (alist-get 'name second-skill) "skill-creator")))))))
+
+(ert-deftest codex-ide-compose-turn-input-does-not-parse-context-as-skills ()
+  (let ((project-dir (codex-ide-test--make-temp-project))
+        (codex-ide--session-metadata (make-hash-table :test 'eq)))
+    (codex-ide-test-with-fixture project-dir
+      (let ((codex-ide-session-baseline-prompt "$imagegen is context")
+            (session (codex-ide--create-process-session)))
+        (codex-ide--session-metadata-put
+         session
+         :skills-list
+         (list (codex-ide-context-test--skill
+                "imagegen"
+                "Generate images.")))
+        (codex-ide--session-metadata-put session :skills-list-state 'ready)
+        (let ((input (let ((codex-ide--session session))
+                       (codex-ide--compose-turn-input "Explain this"))))
+          (should (= (length input) 1))
+          (should (string-match-p "\\$imagegen is context"
+                                  (alist-get 'text (aref input 0)))))))))
+
 (ert-deftest codex-ide-submit-prompt-sends-local-images ()
   (let* ((project-dir (codex-ide-test--make-temp-project))
          (image-path (expand-file-name "screenshot.png" project-dir))
@@ -240,6 +299,84 @@
             (should (equal (alist-get 'type image-item) "localImage"))
             (should (equal (alist-get 'path image-item) image-path))
             (should (equal (alist-get 'detail image-item) "auto"))))))))
+
+(ert-deftest codex-ide-submit-prompt-sends-skill-items ()
+  (let ((project-dir (codex-ide-test--make-temp-project))
+        (codex-ide--session-metadata (make-hash-table :test 'eq))
+        submitted)
+    (codex-ide-test-with-fixture project-dir
+      (codex-ide-test-with-fake-processes
+        (let ((session (codex-ide--create-process-session)))
+          (setf (codex-ide-session-thread-id session) "thread-with-skill")
+          (codex-ide--session-metadata-put
+           session
+           :skills-list
+           (list (codex-ide-context-test--skill
+                  "imagegen"
+                  "Generate images.")))
+          (codex-ide--session-metadata-put session :skills-list-state 'ready)
+          (with-current-buffer (codex-ide-session-buffer session)
+            (codex-ide--insert-input-prompt session "Use $imagegen")
+            (cl-letf (((symbol-function 'codex-ide--request-sync)
+                       (lambda (_session method params)
+                         (when (equal method "turn/start")
+                           (setq submitted params))
+                         nil)))
+              (codex-ide--submit-prompt)))
+          (let* ((input (alist-get 'input submitted))
+                 (text-item (aref input 0))
+                 (skill-item (aref input 1)))
+            (should (equal (alist-get 'threadId submitted)
+                           "thread-with-skill"))
+            (should (string-match-p "Use \\$imagegen"
+                                    (alist-get 'text text-item)))
+            (should (= (length input) 2))
+            (should (equal (alist-get 'type skill-item) "skill"))
+            (should (equal (alist-get 'name skill-item) "imagegen"))
+            (should (equal (alist-get 'path skill-item)
+                           "/tmp/imagegen/SKILL.md"))))))))
+
+(ert-deftest codex-ide-steer-prompt-sends-skill-items ()
+  (let ((project-dir (codex-ide-test--make-temp-project))
+        (codex-ide-running-submit-action 'steer)
+        (codex-ide--session-metadata (make-hash-table :test 'eq))
+        submitted)
+    (codex-ide-test-with-fixture project-dir
+      (codex-ide-test-with-fake-processes
+        (let ((session (codex-ide--create-process-session)))
+          (setf (codex-ide-session-thread-id session) "thread-steer-skill"
+                (codex-ide-session-current-turn-id session) "turn-steer-skill"
+                (codex-ide-session-output-prefix-inserted session) t
+                (codex-ide-session-status session) "running")
+          (codex-ide--session-metadata-put
+           session
+           :skills-list
+           (list (codex-ide-context-test--skill
+                  "imagegen"
+                  "Generate images.")))
+          (codex-ide--session-metadata-put session :skills-list-state 'ready)
+          (with-current-buffer (codex-ide-session-buffer session)
+            (codex-ide--insert-input-prompt session "Use $imagegen")
+            (cl-letf (((symbol-function 'codex-ide--request-sync)
+                       (lambda (_session method params)
+                         (when (equal method "turn/steer")
+                           (setq submitted params))
+                         '((turnId . "turn-steer-skill")))))
+              (codex-ide-submit)))
+          (let* ((input (alist-get 'input submitted))
+                 (text-item (aref input 0))
+                 (skill-item (aref input 1)))
+            (should (equal (alist-get 'threadId submitted)
+                           "thread-steer-skill"))
+            (should (equal (alist-get 'expectedTurnId submitted)
+                           "turn-steer-skill"))
+            (should (string-match-p "Use \\$imagegen"
+                                    (alist-get 'text text-item)))
+            (should (= (length input) 2))
+            (should (equal (alist-get 'type skill-item) "skill"))
+            (should (equal (alist-get 'name skill-item) "imagegen"))
+            (should (equal (alist-get 'path skill-item)
+                           "/tmp/imagegen/SKILL.md"))))))))
 
 (ert-deftest codex-ide-submit-prompt-renders-local-image-thumbnail-in-transcript ()
   (let* ((project-dir (codex-ide-test--make-temp-project))
@@ -539,17 +676,22 @@
 						    codex-ide--active-buffer-contexts)
 					   (puthash working-dir buffer codex-ide--active-buffer-objects))
 					 (kill-buffer buffer)
-					 (let* ((payload (codex-ide--context-payload-for-prompt))
-						(formatted (alist-get 'formatted payload))
-						(summary (alist-get 'summary payload)))
-					   (should (string-match-p
-						    (regexp-quote
-						     "Codex buffer context is being discarded since the buffer does not exist.")
-						    formatted))
-					   (should (equal summary
-							  "Codex buffer context is being discarded since the buffer does not exist."))
-					   (should-not (gethash working-dir codex-ide--active-buffer-contexts))
-					   (should-not (gethash working-dir codex-ide--active-buffer-objects))))
+					 (with-temp-buffer
+					   (setq-local default-directory
+                                                       (file-name-as-directory project-dir))
+					   (cl-letf (((symbol-function 'codex-ide--get-working-directory)
+                                                      (lambda () working-dir)))
+					     (let* ((payload (codex-ide--context-payload-for-prompt))
+						    (formatted (alist-get 'formatted payload))
+						    (summary (alist-get 'summary payload)))
+					       (should (string-match-p
+							(regexp-quote
+							 "Codex buffer context is being discarded since the buffer does not exist.")
+							formatted))
+					       (should (equal summary
+							      "Codex buffer context is being discarded since the buffer does not exist."))
+					       (should-not (gethash working-dir codex-ide--active-buffer-contexts))
+					       (should-not (gethash working-dir codex-ide--active-buffer-objects))))))
 				     (when (buffer-live-p buffer)
 				       (kill-buffer buffer)))))))
 
